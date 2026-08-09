@@ -1,0 +1,433 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb,mathtools,amsthm}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\gint}{g^{\mathrm{int}}}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}{Remark}
+
+\title{An Assignment-Matrix-Free Reformulation for Transmission-Network Reduction}
+\author{Omid Mokhtari}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper considers assignment-based reduction of a meshed transmission network. The natural model moves bus injections and line endpoints onto retained buses through a binary assignment matrix, but the resulting constraints contain products of assignment binaries and continuous voltage angles. We first give this assignment-based model, then remove the products by replacing the assignment matrix with line-status binaries, lifted angles, physical reduced-network flows, and an auxiliary internal-redistribution flow. The two formulations are proved equivalent under connected clustering: inter-cluster transfer is carried by the reduced-network flow $f$, intra-cluster injection relocation by an auxiliary flow $\gint$. Since $\gint$'s bound cannot depend on the clustering it is meant to constrain, we derive a bound computable from the input data alone. The resulting edge-based model removes the assignment matrix and its connectivity constraints entirely, recovering the clustering after solution as the connected components of the retained line subgraph.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Transmission-network reduction, clustering, DC power flow, mixed-integer linear programming.
+\end{IEEEkeywords}
+
+\section{Original Problem}
+
+Consider a connected transmission network with $N$ buses and $L$ lines. The data are
+\begin{align}
+ p&\in\R^N, &
+ \hat\theta&\in\R^N, &
+ D^x&\in\R^{L\times L}, &
+ E&\in\R^{N\times L},
+\end{align}
+where $p$ is the nodal injection vector, $\hat\theta$ the original voltage-angle vector, $D^x$ the diagonal line-susceptance matrix, and $E$ the node--line incidence matrix. The original DC power flow is
+\begin{align}
+ p&=ED^xE^{\mathsf T}\hat\theta, \\
+ \hat f&=D^xE^{\mathsf T}\hat\theta.
+ \label{eq:original_flows}
+\end{align}
+
+The binary matrix $A\in\{0,1\}^{N\times N}$ defines the reduction:
+\begin{equation}
+ A_{ij}=1
+ \quad\Longleftrightarrow\quad
+ \text{bus $j$ is assigned to retained bus $i$}.
+\end{equation}
+Thus $Ap$ moves injections and $AE$ moves line endpoints. Each bus is assigned once, and only a retained bus can receive assignments:
+\begin{align}
+ \sum_{i=1}^{N}A_{ij}&=1, &&\forall j,
+ \label{eq:assign_once}\\
+ A_{ij}&\le A_{ii}, &&\forall i,j.
+ \label{eq:only_retained}
+\end{align}
+The objective $\min\tr(A)$ minimizes the number of retained buses. Every cluster must induce a connected subgraph.
+
+For line $l$ with endpoints $u_l,v_l$: the line is \emph{internal} if both endpoints share a retained bus, and \emph{external} otherwise. Internal lines disappear after contraction; external lines remain. Write $\mathcal C_i:=\{j:A_{ij}=1\}$.
+
+\begin{remark}[Connectivity constraints]
+\label{rem:aconn}
+$\mathcal A_{\mathrm{conn}}$ denotes any linear formulation whose feasible $A$ are exactly those making each $\mathcal C_i$ connected -- e.g., a single-commodity flow model with binary arc variables $y_l\le c_l$ selecting a spanning forest, each retained bus a root, each assigned bus consuming one unit, and arc capacities $Ny_l$. Connectivity is assumed throughout and underlies both directions of the equivalence proof in Section~\ref{sec:equiv}.
+\end{remark}
+
+\section{Original Formulation}
+
+Let $\theta\in\R^N$ contain candidate retained-bus angles. The angle assigned to every original bus is $A^{\mathsf T}\theta$, so the reduced flow is
+\begin{equation}
+ f=D^xE^{\mathsf T}A^{\mathsf T}\theta,
+ \label{eq:original_flow}
+\end{equation}
+and the assigned power balance is
+\begin{equation}
+ Ap=AEf=AED^xE^{\mathsf T}A^{\mathsf T}\theta.
+ \label{eq:original_balance}
+\end{equation}
+
+Let $\underline f_l,\overline f_l$ be the physical limits and $\epsilon_l^L$ the allowed error relative to $\hat f_l$, applying only to external lines:
+\begin{align}
+ |f_l-\hat f_l|&\le\epsilon_l^L,
+ &&\forall l\text{ external},
+ \label{eq:err_ext}\\
+ \underline f_l\le f_l&\le\overline f_l,
+ &&\forall l\text{ external}.
+ \label{eq:lim_ext}
+\end{align}
+An absorbed line has equal endpoint angles, so \eqref{eq:original_flow} gives $f_l=0$. Internal lines are exempt from \eqref{eq:err_ext}--\eqref{eq:lim_ext}: contraction removes the line, and the power it carried reappears as internal redistribution, represented below by $\gint$.
+
+Define the originally binding lines
+\begin{align}
+ \mathcal L^+&:=\{l:\hat f_l=\overline f_l\}, &
+ \mathcal L^-&:=\{l:\hat f_l=\underline f_l\}.
+\end{align}
+To keep an existing congestion from disappearing through aggregation, every line in $\mathcal L^+\cup\mathcal L^-$ is required to stay external:
+\begin{align}
+ f_l&\ge\hat f_l, &&\forall l\in\mathcal L^+,
+ \label{eq:Lplus}\\
+ f_l&\le\hat f_l, &&\forall l\in\mathcal L^-.
+ \label{eq:Lminus}
+\end{align}
+
+This model is exact but hard: \eqref{eq:original_flow} and \eqref{eq:original_balance} both contain products of $A$ with continuous angles.
+
+\section{Reformulation}
+
+\subsection{Which Lines Are Internal?}
+
+Introduce $c_l\in\{0,1\}$ with $c_l=1$ iff $u_l$ and $v_l$ share a cluster, enforced by
+\begin{align}
+ c_l&\ge A_{i,u_l}+A_{i,v_l}-1, &&\forall i,l,
+ \label{eq:c1}\\
+ c_l&\le1-A_{i,u_l}+A_{i,v_l}, &&\forall i,l,
+ \label{eq:c2}\\
+ c_l&\le1+A_{i,u_l}-A_{i,v_l}, &&\forall i,l.
+ \label{eq:c3}
+\end{align}
+Binding lines stay visible:
+\begin{equation}
+ c_l=0,
+ \qquad \forall l\in\mathcal L^+\cup\mathcal L^-.
+ \label{eq:critical_external}
+\end{equation}
+
+\subsection{Physical Reduced-Network Flow}
+
+Introduce a lifted angle vector $\vartheta\in\R^N$ and define
+\begin{equation}
+ f=D^xE^{\mathsf T}\vartheta,
+ \qquad
+ f_l=D^x_{ll}(\vartheta_{u_l}-\vartheta_{v_l}).
+ \label{eq:physical_flow}
+\end{equation}
+This is the DC line-flow equation, the only place the susceptances act, and not a mere definition of $f$: eliminating $\vartheta$ confines $f$ to the range of $D^xE^{\mathsf T}$, a subspace of dimension $N-1$. In a meshed network with $L>N-1$ this imposes $L-N+1$ independent restrictions, one per independent cycle $\mathcal K$,
+\begin{equation}
+ \sum_{l\in\mathcal K}\sigma_l\,x_l\,f_l=0,
+ \qquad x_l:=1/D^x_{ll},
+ \label{eq:kvl}
+\end{equation}
+with $\sigma_l=\pm1$ orienting $l$ around the cycle -- Kirchhoff's voltage law. Contracting a cluster deletes its internal lines from \eqref{eq:kvl}, the sense in which an absorbed line acts as an infinite-susceptance connection.
+
+Define the allowed external-line interval
+\begin{align}
+ \underline\phi_l&:=
+ \begin{cases}
+ \max\{\underline f_l,\hat f_l-\epsilon_l^L,\hat f_l\},
+ &l\in\mathcal L^+,\\
+ \max\{\underline f_l,\hat f_l-\epsilon_l^L\},
+ &\text{otherwise},
+ \end{cases}
+ \label{eq:phi_lo}\\
+ \overline\phi_l&:=
+ \begin{cases}
+ \min\{\overline f_l,\hat f_l+\epsilon_l^L,\hat f_l\},
+ &l\in\mathcal L^-,\\
+ \min\{\overline f_l,\hat f_l+\epsilon_l^L\},
+ &\text{otherwise},
+ \end{cases}
+ \label{eq:phi_hi}
+\end{align}
+and impose
+\begin{equation}
+ \underline\phi_l(1-c_l)
+ \le f_l\le
+ \overline\phi_l(1-c_l)
+ \qquad \forall l,
+ \label{eq:f_onoff}
+\end{equation}
+which has two cases only: $c_l=0$ gives $\underline\phi_l\le f_l\le\overline\phi_l$ (external), and $c_l=1$ gives $f_l=0$ (internal).
+
+\begin{remark}[Binding lines are reproduced exactly]
+\label{rem:binding}
+For $l\in\mathcal L^+$, $\hat f_l=\overline f_l$, so \eqref{eq:phi_lo}--\eqref{eq:phi_hi} give $\underline\phi_l=\overline\phi_l=\hat f_l$: the window collapses to a point and $\epsilon_l^L$ has no effect there, and likewise for $\mathcal L^-$. If this is too strong, replace $\hat f_l$ in \eqref{eq:Lplus}--\eqref{eq:Lminus} by $\hat f_l\mp\delta_l$ for small $\delta_l\ge0$.
+\end{remark}
+
+Since $D^x_{ll}\ne0$, $f_l=0$ on an internal line forces $\vartheta_{u_l}=\vartheta_{v_l}$. Cluster connectivity then makes $\vartheta$ constant on each cluster, so
+\begin{equation}
+ \vartheta=A^{\mathsf T}\theta
+ \label{eq:lifted_equals_assigned}
+\end{equation}
+for some $\theta$ -- obtained automatically, without binary--continuous products.
+
+\subsection{Injection Relocation Inside a Cluster}
+
+The flow $f$ balances the reduced network only at cluster level, not at every eliminated bus. Introduce $\gint\in\R^L$, an auxiliary transfer used only inside clusters -- not a physical DC flow, and subject to no susceptance--angle relation. Impose
+\begin{equation}
+ p=E\bigl(f+\gint\bigr),
+ \label{eq:split_balance}
+\end{equation}
+so $f$ carries physical power between clusters and $\gint$ redistributes injections inside them. The support of $\gint$ is enforced by
+\begin{equation}
+ -G\,c_l\le \gint_l\le G\,c_l
+ \qquad \forall l,
+ \label{eq:g_support}
+\end{equation}
+with $G$ constructed in Section~\ref{sec:bound}: external lines get $\gint_l=0$, internal lines get $|\gint_l|\le G$.
+
+Constraint \eqref{eq:g_support} cannot be dropped. Every column of $E$ has one $+1$ and one $-1$, so $\mathbf 1^{\mathsf T}E=0$; with $\mathbf 1^{\mathsf T}p=0$ this makes $p-Ef$ zero-sum for every $f$, hence \eqref{eq:split_balance} solvable for every $f$. Unrestricted $\gint$ therefore makes the balance vacuous, $c\equiv1$ and $f\equiv0$ feasible, and the network contracts to one bus.
+
+Combining \eqref{eq:physical_flow} and \eqref{eq:split_balance},
+\begin{equation}
+ p=ED^xE^{\mathsf T}\vartheta+E\gint,
+ \label{eq:combined_angle_balance}
+\end{equation}
+so $\vartheta$ must produce susceptance-dependent flows satisfying both balance and the external-line bounds. Fix one reference angle,
+\begin{equation}
+ \vartheta_{j_0}=0.
+ \label{eq:reference}
+\end{equation}
+Every constraint sees $\vartheta$ only through $E^{\mathsf T}\vartheta$, so this is a gauge choice removing the uniform-angle freedom without changing the feasible flows.
+
+\section{A Valid Bound on the Internal Transfer}
+\label{sec:bound}
+
+The clustering is a decision variable, so $G$ cannot be built from the clusters: it must hold simultaneously for every $A$ the model may select. The bound below is computed from the input data before solving and is independent of $A$. Define
+\begin{equation}
+ F_m:=\max\bigl\{\,|\underline\phi_m|,\ |\overline\phi_m|\,\bigr\},
+ \label{eq:Fm}
+\end{equation}
+an upper bound on $|f_m|$ in either case of \eqref{eq:f_onoff}, since $c_m=1$ gives $f_m=0\le F_m$.
+
+\begin{lemma}[Data-only bound]
+\label{lem:bound}
+Let
+\begin{equation}
+ G:=\tfrac12\|p\|_1+\sum_{m=1}^{L}F_m.
+ \label{eq:G}
+\end{equation}
+Then for every $A$ satisfying \eqref{eq:assign_once}, \eqref{eq:only_retained} and $A\in\mathcal A_{\mathrm{conn}}$, and every feasible original solution, there exists $\gint$ supported on internal lines with $r=E\gint$ and $|\gint_l|\le G$ for all $l$.
+\end{lemma}
+
+\begin{IEEEproof}
+Let $r:=p-Ef$; Section~\ref{sec:equiv} shows $Ar=0$, i.e.\ $\sum_{j\in\mathcal C_i}r_j=0$ for every cluster.
+
+\emph{Step 1 (route on a spanning tree).} Each $\mathcal C_i$ is connected, so it admits a spanning tree $\mathcal T_i$. Set $\gint_l=0$ off $\bigcup_i\mathcal T_i$. On a tree, $r=E\gint$ restricted to $\mathcal C_i$ has a unique solution: removing $l\in\mathcal T_i$ splits $\mathcal C_i$ into $\mathcal S_l$ and $\mathcal C_i\setminus\mathcal S_l$, and orienting $l$ out of $\mathcal S_l$,
+\begin{equation}
+ \gint_l=\sum_{j\in\mathcal S_l}r_j.
+\end{equation}
+
+\emph{Step 2 (take the smaller side).} The residual is zero-sum on the cluster, so $\sum_{j\in\mathcal S_l}r_j=-\sum_{j\in\mathcal C_i\setminus\mathcal S_l}r_j$ and
+\begin{equation}
+ |\gint_l|
+ \le\tfrac12\sum_{j\in\mathcal C_i}|r_j|
+ \le\tfrac12\|r\|_1 .
+ \label{eq:half}
+\end{equation}
+The cluster leaves the argument here: any cluster is a subset of the bus set, so the whole network is the worst case.
+
+\emph{Step 3 (bound the residual by data).} $\|r\|_1\le\|p\|_1+\|Ef\|_1$, and each column of $E$ has two nonzeros, so
+\begin{equation}
+ \|Ef\|_1
+ \le\sum_{j}\sum_{m}|E_{jm}|\,|f_m|
+ =2\sum_{m}|f_m|
+ \le2\sum_{m}F_m .
+\end{equation}
+With \eqref{eq:half}, $|\gint_l|\le\tfrac12\|p\|_1+\sum_mF_m=G$.
+\end{IEEEproof}
+
+\begin{remark}[One-sided]
+Any $G'\ge G$ is valid, so overestimating only weakens the linear relaxation; underestimating removes feasible clusterings and turns the model into a restriction of the original rather than an equivalent form.
+\end{remark}
+
+\begin{remark}[Avoiding the constant]
+\label{rem:indicator}
+Solvers supporting indicator constraints can replace \eqref{eq:g_support} by $c_l=0\Rightarrow\gint_l=0$, needing no constant and typically branching better; Lemma~\ref{lem:bound} is then required only for reporting that $\gint$ is bounded.
+\end{remark}
+
+\begin{remark}[A spanning forest suffices]
+\label{rem:forest}
+Step~1 uses only tree lines, so $\gint$ never needs support on more than $N-\tr(A)$ lines. If $\mathcal A_{\mathrm{conn}}$ supplies forest-arc variables $y_l\le c_l$ (Remark~\ref{rem:aconn}), replacing $c_l$ by $y_l$ in \eqref{eq:g_support} cuts the switched constraints from $L$ to the forest size.
+\end{remark}
+
+\section{Why the Reformulation Is Equivalent}
+\label{sec:equiv}
+
+Assume every cluster is connected and $G$ satisfies Lemma~\ref{lem:bound}.
+
+\subsection{Original Model Implies Reformulation}
+
+From a feasible original $(A,\theta)$, set
+\begin{equation}
+ \vartheta=A^{\mathsf T}\theta-\bigl(A^{\mathsf T}\theta\bigr)_{j_0}\mathbf 1 .
+ \label{eq:gauge_shift}
+\end{equation}
+A shift by a multiple of $\mathbf 1$ is invisible to $E^{\mathsf T}$, so \eqref{eq:physical_flow} reproduces the original flow \eqref{eq:original_flow} while \eqref{eq:reference} holds. Internal lines have equal endpoint angles and zero flow, satisfying \eqref{eq:f_onoff} with $c_l=1$; external lines satisfy the same window in both models, satisfying \eqref{eq:f_onoff} with $c_l=0$.
+
+With $r:=p-Ef$, the original balance \eqref{eq:original_balance} gives $Ar=0$: the entries of $r$ sum to zero inside every cluster. Lemma~\ref{lem:bound} then supplies a $\gint$ supported on internal lines with $|\gint_l|\le G$, so \eqref{eq:split_balance} and \eqref{eq:g_support} hold.
+
+\subsection{Reformulation Implies Original Model}
+
+From a feasible reformulated solution, internal lines have $f_l=0$, hence equal endpoint angles by \eqref{eq:physical_flow}, hence \eqref{eq:lifted_equals_assigned} for some $\theta$ by connectivity. Multiplying \eqref{eq:split_balance} by $A$,
+\begin{equation}
+ A(p-Ef)=AE\gint=0,
+\end{equation}
+because an internal line has a zero column in $AE$ (both endpoints share an assignment) and an external line has $\gint_l=0$ by \eqref{eq:g_support}. Therefore $Ap=AEf$, and substituting $f=D^xE^{\mathsf T}\vartheta$ with $\vartheta=A^{\mathsf T}\theta$ recovers \eqref{eq:original_balance}.
+
+The flow constraints match line by line: for $c_l=0$, \eqref{eq:f_onoff} is exactly \eqref{eq:err_ext}--\eqref{eq:lim_ext} with \eqref{eq:Lplus}--\eqref{eq:Lminus}; for $c_l=1$, both models impose $f_l=0$ and neither imposes a window. The two models have the same feasible clusterings and the same optimal value, with angles agreeing up to the gauge \eqref{eq:gauge_shift}.
+
+\section{Complete Reformulated Problem}
+\label{sec:full_model}
+
+Let $\mathcal A_{\mathrm{conn}}$ denote the selected connected-clustering constraints. The compact formulation is
+\begin{subequations}
+\label{eq:full_model}
+\begin{align}
+ \min_{A,c,\vartheta,f,\gint}\quad
+ &\tr(A) \\
+ \mathrm{s.t.}\quad
+ &\sum_iA_{ij}=1,
+ &&\forall j, \\
+ &A_{ij}\le A_{ii},
+ &&\forall i,j, \\
+ &A\in\mathcal A_{\mathrm{conn}},\quad A_{ij}\in\{0,1\},
+ &&\forall i,j, \\
+ &c_l\in\{0,1\},
+ &&\forall l, \\
+ &\text{\eqref{eq:c1}--\eqref{eq:c3}},
+ &&\forall i,l, \\
+ &c_l=0,
+ &&\forall l\in\mathcal L^+\cup\mathcal L^-, \\
+ &f=D^xE^{\mathsf T}\vartheta, \\
+ &\underline\phi_l(1-c_l)\le f_l
+ \le\overline\phi_l(1-c_l),
+ &&\forall l, \\
+ &p=E\bigl(f+\gint\bigr), \\
+ &-G\,c_l\le \gint_l
+ \le G\,c_l,
+ &&\forall l,
+ \label{eq:full_gsupport}\\
+ &\vartheta_{j_0}=0.
+\end{align}
+\end{subequations}
+
+The continuous variables have distinct roles: $\vartheta$ are reduced-network bus angles, $f$ are physical susceptance-dependent line flows, and $\gint$ is redistribution inside clusters only. The reformulation removes the $O(N^2)$ assignment--angle products, replacing them with line-level binary constraints and bounded internal transfers.
+
+Susceptances act only through \eqref{eq:physical_flow}: retained lines keep their original values and no equivalent admittances are created, in contrast with Ward-type reduction. The resulting mismatch is absorbed by $\epsilon^L$ and by the relocation $\gint$; making susceptances variable would reintroduce bilinear terms and is excluded.
+
+\section{Edge-Based Reformulation}
+\label{sec:edge_based_model}
+
+Model~\eqref{eq:full_model} still carries the assignment matrix $A$ and its connectivity constraints $\mathcal A_{\mathrm{conn}}$ (Remark~\ref{rem:aconn}), needed only to derive $c_l$ and to keep clusters connected. Neither is necessary: the line-status variables $c_l$ can be taken as the sole decision, with the clustering recovered after optimization as the connected components of the subgraph induced by $\{l:c_l=1\}$ -- connected by construction, at no extra constraint.
+
+Let $f\in\R^L$ be the physical DC line flow and $g\in\R^L$ the internal-redistribution flow of Section~\ref{sec:bound}, now indexed by line rather than by assignment. The edge-based model is
+\begin{subequations}
+\label{eq:edge_model}
+\begin{align}
+\max_{c,\vartheta,f,g}\quad
+&\sum_{l=1}^{L} c_l
+\label{eq:edge_obj}
+\\
+\mathrm{s.t.}\quad
+&c_l\in\{0,1\},
+&&\forall l,
+\label{eq:edge_binary}
+\\
+&c_l=0,
+&&\forall l\in\mathcal L^+\cup\mathcal L^-,
+\label{eq:edge_critical}
+\\
+&f=D^xE^{\mathsf T}\vartheta,
+\label{eq:edge_dc}
+\\
+&\underline{\phi}_l(1-c_l)
+\le f_l\le
+\overline{\phi}_l(1-c_l),
+&&\forall l,
+\label{eq:edge_fswitch}
+\\
+&p=E(f+g),
+\label{eq:edge_balance}
+\\
+&-G_l c_l
+\le g_l\le
+G_l c_l,
+&&\forall l,
+\label{eq:edge_gsupport}
+\\
+&\vartheta_{j_0}=0.
+\label{eq:edge_reference}
+\end{align}
+\end{subequations}
+If $c_l=0$, then $g_l=0$ and line $l$ carries its physical flow inside its admissible window; if $c_l=1$, \eqref{eq:edge_fswitch} forces $f_l=0$, hence $\vartheta_{u_l}=\vartheta_{v_l}$, while $g_l$ may redistribute power inside the cluster. Only \eqref{eq:edge_gsupport} requires a big-$M$ or indicator implementation.
+
+The objective \eqref{eq:edge_obj} maximizes internal lines, not retained buses. At optimality every non-protected line whose endpoints are already connected by an internal path is also declared internal: its endpoints already share an angle, its flow is already zero, and switching $c_l$ from 0 to 1 preserves feasibility while improving the objective. Two clusterings with the same bus count can therefore score differently, and the denser one wins even when it is less bus-efficient.
+
+\subsection{Tightening the Internal-Transfer Bound}
+
+The global bound \eqref{eq:G} is proved once for the whole network and is loose for any single line. A per-line bound derived from the same argument is tighter and better conditioned for a solver.
+
+Let $\widehat f$ be the original DC flow, $e^0:=p-E\widehat f$ the (normally zero) original balance mismatch, and $d:=\widehat f-f$ the flow deviation, so that
+\begin{equation}
+p-Ef=e^0+Ed.
+\label{eq:residual_deviation}
+\end{equation}
+For a line that may become internal, $f_l\in\{0\}\cup[\underline\phi_l,\overline\phi_l]$, so a valid interval for $d_l$ is
+\begin{align}
+\underline d_l
+&=\min\bigl\{\widehat f_l,\ \widehat f_l-\overline{\phi}_l,\ \widehat f_l-\underline{\phi}_l\bigr\},
+\label{eq:d_lower}
+\\
+\overline d_l
+&=\max\bigl\{\widehat f_l,\ \widehat f_l-\overline{\phi}_l,\ \widehat f_l-\underline{\phi}_l\bigr\}.
+\label{eq:d_upper}
+\end{align}
+For a line fixed external the internal case is removed: $\underline d_l=\widehat f_l-\overline\phi_l$, $\overline d_l=\widehat f_l-\underline\phi_l$.
+
+Using \eqref{eq:residual_deviation}, valid nodal residual bounds are
+\begin{align}
+\underline r_i
+&=e_i^0+\sum_{l=1}^{L}\min\{E_{il}\underline d_l,E_{il}\overline d_l\},
+\label{eq:r_lower}
+\\
+\overline r_i
+&=e_i^0+\sum_{l=1}^{L}\max\{E_{il}\underline d_l,E_{il}\overline d_l\}.
+\label{eq:r_upper}
+\end{align}
+With $R_i^+:=\max\{0,\overline r_i\}$ and $R_i^-:=\max\{0,-\underline r_i\}$, the residual sums to zero over every feasible cluster; routing it on a spanning tree gives, for every used internal edge,
+\begin{equation}
+|g_l|\le\min\Bigl\{\textstyle\sum_{i=1}^{N}R_i^+,\ \sum_{i=1}^{N}R_i^-\Bigr\}=:G_{\mathrm{res}}.
+\label{eq:G_residual}
+\end{equation}
+
+A simpler alternative follows from $\Delta_l:=\max\{|\underline d_l|,|\overline d_l|\}$: since $\|e^0+Ed\|_1\le\|e^0\|_1+2\sum_l\Delta_l$,
+\begin{equation}
+G_{\Delta}:=\tfrac12\|e^0\|_1+\sum_{l=1}^{L}\Delta_l
+\label{eq:G_delta}
+\end{equation}
+is also valid. The bound applied per line is
+\begin{equation}
+G_l=\min\Bigl\{G_{\mathrm{res}},\ G_{\Delta},\ \tfrac12\|p\|_1+\textstyle\sum_{m}F_m\Bigr\},
+\label{eq:G_recommended}
+\end{equation}
+the last term being \eqref{eq:G} restricted to the current window definitions. Because \eqref{eq:G_recommended} is a minimum of independently valid bounds, $G_l$ is itself valid, and it is typically far tighter than \eqref{eq:G} because it depends on the admissible \emph{deviation} from the original flow rather than on the full injection and line-flow magnitudes.
+
+\end{document}

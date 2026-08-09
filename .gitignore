@@ -1,0 +1,36 @@
+# --------------------------------------------------------------------------- #
+# Generated outputs -- every file under outputs/ is produced by run_tnr_single.jl
+# / run_tnr_multiscenario.jl / run_scenario_dcopf.jl. Regenerate, don't commit.
+# --------------------------------------------------------------------------- #
+outputs/
+
+# --------------------------------------------------------------------------- #
+# Large / third-party case data. case14 and case118 are the only case files
+# kept in git (they're small and are the quick-start / default examples).
+# Everything else -- the large PGLib-OPF cases and the full ACTIVSg synthetic
+# grids (PowerWorld binaries + multi-year scenario matrices) -- is fetched
+# separately; see README.md "Case data" for sources and where to put them.
+# --------------------------------------------------------------------------- #
+case studies/ACTIVSg200/
+case studies/ACTIVSg2000/
+case studies/pglib_opf_case300_ieee.m
+case studies/pglib_opf_case500_goc.m
+case studies/pglib_opf_case2000_goc.m
+case studies/pglib_opf_case6515_rte.m
+
+# --------------------------------------------------------------------------- #
+# Solver / debug artifacts
+# --------------------------------------------------------------------------- #
+*.log
+gurobi.log
+
+# --------------------------------------------------------------------------- #
+# Editor / OS cruft
+# --------------------------------------------------------------------------- #
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.$*.bkp

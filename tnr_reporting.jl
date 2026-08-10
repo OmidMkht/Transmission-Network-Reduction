@@ -55,10 +55,17 @@ relaxation_short(mode::Symbol, delta::Real) =
     mode === :none ? "none (exact pin)" :
     string(mode, " ", round(100 * delta, digits=3), "%")
 
-"Open a file in the OS default application. Never throws."
+"""
+Open a file for viewing. Prefers the VS Code CLI (`code -r`, opens as a tab
+in the running IDE window) when it's on PATH; falls back to the OS default
+application otherwise. Never throws.
+"""
 function open_externally(path::AbstractString)
     try
-        if Sys.iswindows()
+        code_cli = Sys.which("code")
+        if !isnothing(code_cli)
+            run(ignorestatus(`$code_cli -r $path`))
+        elseif Sys.iswindows()
             # PowerShell's -Command joins every remaining argument and re-parses
             # the result, so a path containing spaces must arrive as ONE
             # already-quoted command string.

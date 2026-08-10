@@ -808,12 +808,21 @@ function benchmark_dcopf_solve_times(c::MultiScenarioTxReductionCase, Aval,
                                      scenario_indices;
                                      repeats::Int=5, relax_pmin::Bool=true,
                                      threads::Int=1, time_limit=nothing,
-                                     optimizer=Gurobi.Optimizer,
+                                     optimizer=nothing,
                                      progress_every::Int=25)
     base = c.base
     scenarios = Int.(collect(scenario_indices))
     H = length(scenarios)
     repeats >= 1 || error("repeats must be at least 1")
+    # One shared, silenced environment for every model this function builds --
+    # (1 warm-up + repeats) x 2 networks x H scenarios of them. A fresh
+    # Gurobi.Optimizer() per model (the old default) reprints the license
+    # banner every time; OutputFlag set on the model afterward is too late to
+    # suppress it, only a pre-silenced shared Env does.
+    if optimizer === nothing
+        env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
+        optimizer = () -> Gurobi.Optimizer(env)
+    end
     A = round.(Int, Aval)
     red = extract_reduction(A)
     rep_full = collect(1:base.N)

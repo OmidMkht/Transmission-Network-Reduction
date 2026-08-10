@@ -45,9 +45,9 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
                                             lmp_threshold::Real=5.0,
                                             lmp_relax_pmin::Bool=true,
                                             lmp_opf_time_limit=nothing,
-                                            int_feas_tol=1e-7,
-                                            feasibility_tol=1e-7,
-                                            optimality_tol=1e-7,
+                                            int_feas_tol=nothing,
+                                            feasibility_tol=nothing,
+                                            optimality_tol=nothing,
                                             log_file=nothing)
     base = c.base
     win = multiscenario_windows(c, epsL;

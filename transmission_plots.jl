@@ -18,11 +18,10 @@
 # cluster holds 185/200 buses and its hull would cover everyone else's too);
 # stroking the cluster's own edges traces its real footprint.
 #
-# Cluster hues come from a validated categorical palette via greedy graph
-# colouring of the cluster-adjacency graph (adjacent = joined by an external
-# line) -- only clusters that actually touch need distinct hues, non-adjacent
-# ones reuse colours (ordinary map-colouring). Red is reserved for congestion,
-# never used for a cluster.
+# Cluster hues come from Colors.jl's distinguishable_colors, one per cluster --
+# every cluster gets its own colour, not just adjacent ones. White, black and
+# the reserved congestion red are seeded in so no cluster is confusable with
+# the background, text, or a congestion marker.
 # --------------------------------------------------------------------------- #
 
 using CairoMakie
@@ -31,17 +30,7 @@ using Graphs
 using NetworkLayout
 using GeometryBasics: Point2f
 
-# Categorical slots 1-7 of the reference palette, in its documented order. Slot 8
-# (red) is deliberately omitted: red is reserved for congestion below.
-const CLUSTER_PALETTE = [
-    colorant"#2a78d6",   # blue
-    colorant"#eb6834",   # orange
-    colorant"#1baf7a",   # aqua
-    colorant"#eda100",   # yellow
-    colorant"#e87ba4",   # magenta
-    colorant"#008300",   # green
-    colorant"#4a3aa7",   # violet
-]
+const LEGEND_SWATCH = colorant"#2a78d6"   # representative example only, not an actual cluster's color
 const SURFACE      = colorant"#fcfcfb"
 const INK_PRIMARY  = colorant"#0b0b0b"
 const INK_SECOND   = colorant"#52514e"
@@ -134,22 +123,17 @@ function _halo_text!(ax, positions; text, fontsize, color, font=:bold,
     return nothing
 end
 
-# Greedy colouring of the cluster-adjacency graph: adjacent clusters (joined by
-# an external line) always get different hues, so the palette never has to grow
-# with the cluster count. Largest clusters are coloured first, which keeps the
-# dominant regions on the leading -- best separated -- slots.
-function _cluster_colors(merged_reps, csize, adjacency)
-    color_index = Dict{Int,Int}()
-    for i in sort(merged_reps; by = r -> (-csize[r], r))
-        used = Set(color_index[j] for j in get(adjacency, i, Int[])
-                   if haskey(color_index, j))
-        k = 1
-        while k in used && k < length(CLUSTER_PALETTE)
-            k += 1
-        end
-        color_index[i] = k
-    end
-    return Dict(i => CLUSTER_PALETTE[k] for (i, k) in color_index)
+# One distinguishable colour per cluster (not just per adjacent pair), largest
+# cluster first so the most visually prominent regions get the most-separated
+# hues. Seeded with white/black/congestion-red so a cluster colour is never
+# confusable with the background, text, or a congestion marker; those three
+# come back as the first entries of distinguishable_colors and are dropped.
+function _cluster_colors(merged_reps, csize)
+    isempty(merged_reps) && return Dict{Int,RGB{Float64}}()
+    seed = [RGB(1.0, 1.0, 1.0), RGB(0.0, 0.0, 0.0), convert(RGB, CONGESTED_COLOR)]
+    palette = distinguishable_colors(length(merged_reps) + length(seed), seed)[length(seed)+1:end]
+    ordered = sort(merged_reps; by = r -> (-csize[r], r))
+    return Dict(i => palette[k] for (k, i) in enumerate(ordered))
 end
 
 """
@@ -239,15 +223,8 @@ function plot_reduction(c, A;
     binding_set = Set(binding)
     binding_ext = intersect(binding, external)
 
-    # Cluster colouring: adjacency is "joined by a surviving line".
     merged_reps = [i for i in retained if csize[i] > 1]
-    adjacency = Dict{Int,Set{Int}}(i => Set{Int}() for i in retained)
-    for l in external
-        a, b = rep[c.Efrom[l]], rep[c.Eto[l]]
-        push!(adjacency[a], b)
-        push!(adjacency[b], a)
-    end
-    cluster_color = _cluster_colors(merged_reps, csize, adjacency)
+    cluster_color = _cluster_colors(merged_reps, csize)
     color_of(i) = get(cluster_color, i, SINGLETON_COLOR)
 
     internal_by_cluster = Dict{Int,Vector{Int}}()
@@ -409,9 +386,9 @@ function plot_reduction(c, A;
     end
 
     legend_elements = Any[
-        PolyElement(color=(CLUSTER_PALETTE[1], 0.16),
-                    strokecolor=CLUSTER_PALETTE[1], strokewidth=1.2),
-        MarkerElement(marker=:diamond, color=CLUSTER_PALETTE[1],
+        PolyElement(color=(LEGEND_SWATCH, 0.16),
+                    strokecolor=LEGEND_SWATCH, strokewidth=1.2),
+        MarkerElement(marker=:diamond, color=LEGEND_SWATCH,
                       strokecolor=INK_PRIMARY, strokewidth=1.2, markersize=15),
         MarkerElement(marker=:circle, color=SINGLETON_COLOR,
                       strokecolor=SURFACE, strokewidth=0.5, markersize=9),

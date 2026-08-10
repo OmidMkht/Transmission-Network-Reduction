@@ -108,9 +108,11 @@ function build_tx_case(casefile::AbstractString;
     Ln = length(Efrom)
     j0 = something(findfirst(==(3), bus_type), 1)
 
-    # base DC-OPF for a consistent (p, thetahat, fhat)
-    m = Model(Gurobi.Optimizer)
-    set_optimizer_attribute(m, "OutputFlag", 0)
+    # base DC-OPF for a consistent (p, thetahat, fhat). OutputFlag is set on the
+    # Env before it starts, not on the model after -- set_optimizer_attribute
+    # here would be too late to suppress the license banner.
+    env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
+    m = Model(() -> Gurobi.Optimizer(env))
     isnothing(time_limit) || set_optimizer_attribute(m, "TimeLimit", time_limit)
     @variable(m, th[1:N]); @variable(m, pG[1:nG]); @variable(m, pF[1:Ln])
     @constraint(m, th[j0] == 0)
@@ -972,9 +974,14 @@ function full_network_lmps(c::MultiScenarioTxReductionCase, selected;
     N = c.base.N
     lmp = zeros(N, length(selected))
     A0 = Matrix{Float64}(I, N, N)
+    # One shared, silenced environment for every scenario -- each fresh Gurobi.Env
+    # reprints the license banner (OutputFlag set after the fact doesn't suppress
+    # it, only a shared env avoids repeating it).
+    env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
+    optimizer = () -> Gurobi.Optimizer(env)
     for (ss, s) in enumerate(selected)
         res = solve_assigned_dc_opf_scenario(c, A0, s;
-                relax_pmin=relax_pmin, time_limit=time_limit)
+                relax_pmin=relax_pmin, time_limit=time_limit, optimizer=optimizer)
         isnothing(res.lmp) &&
             error("full-network DC-OPF gave no duals for scenario $s ($(res.status))")
         lmp[:, ss] = res.lmp

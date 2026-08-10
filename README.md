@@ -64,8 +64,7 @@ place it under `case studies/<filename>.m`.
 | `tnr_reporting.jl` | Console reports, plots, CSV output, the sweep driver |
 | `transmission_plots.jl` | Before/after network figure |
 | `run_tnr.jl` | Runner: one test case, one operating point |
-| `transmission_network_reduction.tex` | The formulation this code implements |
-| `reference/` | Background paper the formulation is drawn from |
+| `reference/` | Background paper, plus the compiled formulation paper this code implements |
 
 `outputs/` is where every runner writes results -- it's gitignored and
 reproducible from the case data and `cfg` blocks above.

@@ -1,8 +1,20 @@
 # --------------------------------------------------------------------------- #
-# Generated outputs -- every file under outputs/ is produced by run_tnr_single.jl
+# Generated outputs -- every file under outputs/ is produced by run_tnr.jl
 # / run_tnr_multiscenario.jl / run_scenario_dcopf.jl. Regenerate, don't commit.
 # --------------------------------------------------------------------------- #
 outputs/
+
+# --------------------------------------------------------------------------- #
+# Paper source. Only the compiled PDF is published (see reference/); the .tex
+# stays local.
+# --------------------------------------------------------------------------- #
+transmission_network_reduction.tex
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
 
 # --------------------------------------------------------------------------- #
 # Large / third-party case data. case14 and case118 are the only case files

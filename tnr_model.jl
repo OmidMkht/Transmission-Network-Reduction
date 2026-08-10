@@ -1,6 +1,6 @@
 # --------------------------------------------------------------------------- #
 # THE OPTIMIZATION PROBLEM -- edge-based, assignment-matrix-free reduction
-# (see transmission_network_reduction.tex, the edge-based model).
+# (see transmission_network_reduction.pdf, the edge-based model).
 #
 # c_l (internal/external) is shared across scenarios; angles, external flows
 # and internal transfers are per scenario. A single-scenario run is just
@@ -58,11 +58,13 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
         congestion_relaxation_mode=congestion_relaxation_mode)
     selected, protected = win.selected, win.protected
     philo, phiup = win.philo, win.phiup
+    
     # Per-(line, scenario) internal-transfer bound: min(x*H, G), x =
     # internal_bound_scale. G alone is proven but one loose number for the whole
     # network; H is a per-line heuristic. See multiscenario_internal_bounds.
     G = multiscenario_internal_bounds(c, selected, philo, phiup, win.epsv;
                                       internal_bound_scale=internal_bound_scale)
+
     N, Ln, S = base.N, base.Ln, length(selected)
     u, v = base.Efrom, base.Eto
 
@@ -85,20 +87,9 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     m = Model(Gurobi.Optimizer)
     set_optimizer_attribute(m, "MIPGap", mipgap)
     set_optimizer_attribute(m, "Threads", threads)
-
-    # Objective is a bare count of binaries, so a c_l Gurobi leaves ~1e-5 short of
-    # integer (its default IntFeasTol) is a free +1, and can leak flow onto a
-    # line meant to be external through the SOS1 pair. model_feasibility_check
-    # judges at 1e-6, so keep these strictly tighter or the solve can return
-    # points the check then rejects. Measured on case118: default tolerances
-    # reported OPTIMAL at 137 lines with a real 2.1e-4 SOS violation; tightened,
-    # 136 lines, genuine, and faster.
     isnothing(int_feas_tol)    || set_optimizer_attribute(m, "IntFeasTol", int_feas_tol)
     isnothing(feasibility_tol) || set_optimizer_attribute(m, "FeasibilityTol", feasibility_tol)
     isnothing(optimality_tol)  || set_optimizer_attribute(m, "OptimalityTol", optimality_tol)
-    # Don't drop this. Without it, Gurobi's presolve can declare a numerically
-    # wide model (e.g. ACTIVSg2000) infeasible at the root even though c = 0 is
-    # verifiably feasible by hand -- NumericFocus=3 (or Presolve=0) fixes it.
     isnothing(numeric_focus) || set_optimizer_attribute(m, "NumericFocus", numeric_focus)
     isnothing(time_limit) || set_optimizer_attribute(m, "TimeLimit", time_limit)
     isnothing(log_file) || set_optimizer_attribute(m, "LogFile", log_file)
@@ -122,10 +113,7 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     end
 
     # Bridges and protected-free leaf blocks: provably mergeable at ZERO flow
-    # error anywhere else (see exactly_mergeable_lines). This is a dominance
-    # property, so :fix cannot change the optimum -- it only deletes search.
-    # :warm hands the same set over as a MIP start instead, which is the honest
-    # choice if you want the solver to confirm the argument rather than trust it.
+    # error anywhere else (see exactly_mergeable_lines). 
     merge_lines = Int[]
     merge_info = nothing
     if merge_exact_blocks
@@ -162,9 +150,7 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
 
     # LMP SEPARATION. Keep buses whose prices differ by more than lmp_threshold
     # out of a common cluster, by forbidding the shortest path between them from
-    # going fully internal. Necessary but not sufficient for separation (other
-    # paths remain), so the achieved separation is verified after the solve
-    # rather than assumed -- see n_lmp_separated in the return value.
+    # going fully internal. 
     lmp_paths = Vector{Vector{Int}}()
     lmp_pairs = Tuple{Int,Int}[]
     lmp_mat = nothing
@@ -201,9 +187,7 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
         sum(f[l, ss] + gint[l, ss] for l in incoming[b]; init=0.0) ==
         c.p[b, selected[ss]])
 
-    # SOS1 switching, not big-M: a big-M window lets a line ride IntFeasTol and
-    # report a false optimum (see the tolerance note above). sup/slo carry the
-    # window violation so the SOS1 pair can switch it off without a constant.
+    # SOS1 
     @variable(m, sup[1:Ln, 1:S] >= 0)
     @variable(m, slo[1:Ln, 1:S] >= 0)
     @constraint(m, [l=1:Ln, s=1:S], f[l, s] - phiup[l, s] <= sup[l, s])
@@ -232,9 +216,6 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     if !isnothing(warm_c)
         length(warm_c) == Ln || error("warm_c must have length $Ln")
         cl_warm = round.(Int, warm_c)
-        # A newly added scenario is precisely one the previous clustering may
-        # violate. Seed only shared binaries and let Gurobi complete/repair the
-        # continuous point instead of supplying inconsistent flows and angles.
         for l in 1:Ln
             set_start_value(cl[l], cl_warm[l])
             set_start_value(el[l], 1 - cl_warm[l])
@@ -248,12 +229,7 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
             set_start_value(cl[l], cl_warm[l])
             set_start_value(el[l], 1 - cl_warm[l])
         end
-        # Re-derive angles for the actual merged set rather than reusing thetahat:
-        # a merged bridge shifts one side's angles bodily, so the stale angles
-        # would leave vartheta_u != vartheta_v across a line just declared
-        # internal, and Gurobi discards an inconsistent start wholesale (measured
-        # cost on case118: 69s/236k nodes -> 327s/1.16M). External lines keep
-        # f = fhat; gint is left for Gurobi to complete from nodal balance.
+        # External lines keep f = fhat; gint is left for Gurobi to complete from nodal balance.
         A_warm = assignment_from_line_status(base, cl_warm)
         red_warm = extract_reduction(A_warm)
         Ew = incidence_matrix(base)
@@ -289,8 +265,6 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     A = assignment_from_line_status(base, cval)
     red = extract_reduction(A)
 
-    # The shortest-path rows are only NECESSARY for separation, so check what was
-    # actually achieved: a pair can still share a cluster via a different path.
     n_lmp_sep = 0
     n_lmp_merged = 0
     lmp_merged_pairs = Tuple{Int,Int}[]

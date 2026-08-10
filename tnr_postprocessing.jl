@@ -1,27 +1,9 @@
 # --------------------------------------------------------------------------- #
 # POSTPROCESSING AND VALIDATION.
-#
-# Everything that takes a SOLVED clustering and asks whether it is any good.
-# Every function works for both single- and multi-scenario cases (a
-# single-scenario case is one with S = 1), so both runners validate identically.
-#
-# Three independent layers, deliberately kept separate because they answer
-# different questions and can disagree:
-#   1. model feasibility  -- is the SOLVER'S OWN returned point feasible?
-#   2. window benchmark   -- does the clustering hold across every scenario?
-#   3. DC-OPF validation  -- does a dispatch computed on the REDUCED network
-#                            still work when lifted back onto the full one?
-#
-# Only the runners call `include`; this file assumes the preprocessing file has
-# already been loaded (it defines the case structs).
 # --------------------------------------------------------------------------- #
 
 # ============== 1. RECOVERING THE CLUSTERING FROM LINE STATUS =============== #
-# Recover the assignment matrix from a solved (or any candidate) line-status
-# vector: connected components of the subgraph induced by {l : c_l = 1}. Each
-# component's representative is its smallest-index bus, except the component
-# containing the reference bus j0, which always keeps j0 as representative
-# (j0's angle is the gauge reference and the retained slack bus elsewhere).
+# Recover the assignment matrix from a line status vector
 function assignment_from_line_status(c::TxReductionCase, cval; tol::Float64=0.5)
     N = c.N
     g = SimpleGraph(N)
@@ -698,19 +680,8 @@ function validate_reduced_dcopf_scenarios(c::MultiScenarioTxReductionCase,
 end
 
 # --------------------------------------------------------------------------- #
-# Canonical internal (shorted-line) flows, used by the legacy A-model
-# cross-check in the reporting module. Kept here because it depends only on a
-# clustering plus the base injections, like everything else in this file.
+# Canonical internal flows
 # --------------------------------------------------------------------------- #
-# The solver's own g is NOT unique: nothing in the model penalises it, so g is a
-# degenerate free variable and Gurobi returns an arbitrary vertex -- in practice
-# pinned at the big-M (|g| = G exactly, hundreds of times the line rating).
-# Comparing THAT against fhat compares fhat to an arbitrary number.
-#
-# The canonical g is the one the physics picks: short the internal lines
-# (b -> big) on the original topology and read off the flow they carry. This is
-# the b -> infinity limit, it is unique, and it is the flow the aggregated reduced
-# network A E Dx E' A' actually implies.
 function shorted_internal_flows(c::TxReductionCase, Aval; short_factor::Float64=1e8)
     A = round.(Int, Aval)
     rep = extract_reduction(A).rep_of
@@ -722,23 +693,6 @@ function shorted_internal_flows(c::TxReductionCase, Aval; short_factor::Float64=
 end
 
 # ================== 6. SOLVE-TIME BENCHMARK (full vs reduced) ============== #
-#
-# The point of reducing a network is that the reduced one is cheaper to solve,
-# so measure it fairly. solve_assigned_dc_opf_scenario won't do: it builds
-# theta[1:N]/flow[1:Ln] for both networks and just fixes the collapsed angles,
-# so both models are the SAME SIZE and the timing only measures how well
-# presolve copes -- not the network a production tool would actually be given.
-# This section instead builds each network natively (n_retained buses,
-# external lines only, loads aggregated onto cluster representatives).
-#
-# Equivalent conditions: one builder for both, identical solver attributes/
-# time limit/relax_pmin, Threads=1 (multi-threaded timings are noisier than
-# the effect being measured), a warm-up solve before timing (else the first
-# measurement includes Julia's JIT), `repeats` solves reporting MIN (the
-# robust statistic for timing) alongside the median. Lines whose endpoints
-# land in the same cluster are dropped, not kept as zero-flow self-loops.
-# Reported per scenario so one hard hour can't masquerade as a trend.
-# --------------------------------------------------------------------------- #
 """Build one DC-OPF over the bus set `retained`, mapping every bus through `rep`."""
 function _dcopf_on_partition(c::MultiScenarioTxReductionCase, scenario_index::Int,
                              rep::AbstractVector{Int}, retained::AbstractVector{Int},
@@ -760,21 +714,13 @@ function _dcopf_on_partition(c::MultiScenarioTxReductionCase, scenario_index::In
     vv = [idx[rep[base.Eto[l]]] for l in keep_lines]
     nL = length(keep_lines)
 
-    # direct_model writes each constraint straight into Gurobi as it is built, so
-    # `optimize!` is a PURE SOLVE. With the cached Model the whole MOI -> Gurobi
-    # copy happens inside `optimize!` instead, and a benchmark that times
-    # `optimize!` would be measuring model transfer, not solving -- on a 118-bus
-    # DC-OPF the transfer is ~5 ms against ~0.1 ms of actual simplex work, so it
-    # would swamp the very thing being measured.
+
     model = direct ? direct_model(optimizer()) : Model(optimizer)
     set_optimizer_attribute(model, "OutputFlag", 0)
     set_optimizer_attribute(model, "Threads", threads)
     set_optimizer_attribute(model, "MIPGap", 0.00)
     isnothing(time_limit) || set_optimizer_attribute(model, "TimeLimit", time_limit)
-    # Ratings and generator limits go on as VARIABLE BOUNDS, not rows. A
-    # double-sided @constraint becomes an MOI Interval, which direct_model cannot
-    # bridge; bounds are also what a solver wants. Applied identically to both
-    # networks, so the comparison is unaffected.
+
     frate_k = [base.frate[l] for l in keep_lines]
     @variable(model, theta[1:nb])
     @variable(model, pmin[g] <= pG[g=1:nG] <= base.pmax[g])
@@ -817,11 +763,7 @@ function benchmark_dcopf_solve_times(c::MultiScenarioTxReductionCase, Aval,
     scenarios = Int.(collect(scenario_indices))
     H = length(scenarios)
     repeats >= 1 || error("repeats must be at least 1")
-    # One shared, silenced environment for every model this function builds --
-    # (1 warm-up + repeats) x 2 networks x H scenarios of them. A fresh
-    # Gurobi.Optimizer() per model (the old default) reprints the license
-    # banner every time; OutputFlag set on the model afterward is too late to
-    # suppress it, only a pre-silenced shared Env does.
+
     if optimizer === nothing
         env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
         optimizer = () -> Gurobi.Optimizer(env)
@@ -844,13 +786,7 @@ function benchmark_dcopf_solve_times(c::MultiScenarioTxReductionCase, Aval,
     ok_full = falses(H); ok_red = falses(H)
     dims_full = nothing; dims_red = nothing
 
-    # Three metrics. solve_time(model) (Gurobi's Runtime) is the natural one, but
-    # a DC-OPF this size finishes in ~0.1ms -- below the timer's resolution, so
-    # it reads exactly 0.0 and is reported as unresolved rather than trusted.
-    # wall is `repeats` cold solves timed as a batch (models built outside the
-    # timed region), real but sensitive to machine load. work is Gurobi's
-    # deterministic effort measure -- reproducible, use it when it and wall clock
-    # disagree.
+    # metrics:
     function timed(build)
         warm = build()
         optimize!(warm.model)                  # absorbs JIT; never timed

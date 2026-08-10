@@ -1,20 +1,14 @@
 # --------------------------------------------------------------------------- #
-# Single-scenario runner: one pglib/MATPOWER test case (case118, case300, ...).
+# runner: one pglib/MATPOWER test case (case118, case300, ...).
 #
-#   julia --project=. --startup-file=no run_tnr.jl
+# julia --project=. --startup-file=no run_tnr.jl
 #
-# There is no separate single-scenario model: a test case is built as a case
-# with S = 1 (`build_single_scenario_case`) and goes through the same model,
-# preprocessing, validation and reporting as a multi-hour horizon would.
-#
-# READ THIS BEFORE INTERPRETING n_retained. The objective maximizes the number
-# of INTERNAL LINES, not the number of buses removed -- see tnr_model.jl.
+# The objective maximizes the number of INTERNAL LINES -- see tnr_model.jl.
 # --------------------------------------------------------------------------- #
 
 using LinearAlgebra, Statistics, Dates, DelimitedFiles
 
-# The ONLY place include() is used. Preprocessing must come first: it defines
-# the case structs every other file's methods dispatch on.
+
 @eval module TNR
     include(joinpath(@__DIR__, "tnr_preprocessing.jl"))
     include(joinpath(@__DIR__, "tnr_model.jl"))
@@ -25,11 +19,11 @@ include(joinpath(@__DIR__, "tnr_reporting.jl"))
 
 # ========================== CONFIGURATION ================================== #
 cfg = (
-    # --- inputs ---
+    # --- inputs 
     casefile   = joinpath(@__DIR__, "case studies", "pglib_opf_case118_ieee.m"),
     output_dir = joinpath(@__DIR__, "outputs", "case118_edge"),
 
-    # --- reduction ---
+    # --- reduction 
     normalized_error_threshold = 0.10,   # eps, as a fraction of each rating
     # nothing = only lines EXACTLY at their rating are protected. A value in
     # (0,1) also protects everything loaded at or above that fraction.
@@ -40,20 +34,17 @@ cfg = (
     # --- solver ---
     opf_time_limit      = 2 * 60.0,
     solve_time_limit    = 5 * 60.0,
-    cycle_cut_lens      = (2, 3, 4),   # () = off; 2 = parallel lines, 3 = triangles, 4 = chordless 4-cycles
-    # NOT optional. Without it Gurobi's presolve can prune wrongly on a
-    # numerically wide model and report a false optimum -- see tnr_model.jl.
     numeric_focus       = 3,
-    screening_tolerance = 1e-6,
+
+    # cuts
+    cycle_cut_lens      = (2, 3, 4),   # () = off; 2 = parallel lines, 3 = triangles, 4 = chordless 4-cycles
+
     gurobi_log          = false,   # <output_dir>/<setting>/gurobi.log
 
     # --- scenario settings (fixed: there is only one operating point) ---
     scenario_generation = false,
 
-    # --- computational payoff: full vs reduced DC-OPF solve cost -------------
-    # The reason to reduce a network is that the reduced one is cheaper to
-    # solve, so measure it: both networks built by one builder, identical
-    # solver settings, best of a few repeats after a warm-up.
+    # --- computational payoff
     solve_time_benchmark = true,
 
     # --- DC-OPF validation ---
@@ -103,9 +94,6 @@ for art in artifacts
     println("RESULTS:  ", TxReport.relaxation_pretty(art.mode, art.delta))
     println(repeat("=", 78))
     cfg.show.reduction   && TxReport.report_reduction(c, art.r, art.A)
-    # This has to come BEFORE the checks below: they discard the solver's own
-    # (f, vartheta, g) and recompute from the recovered clustering, so none of
-    # them would notice that the returned point was itself infeasible.
     cfg.show.model_check && TxReport.report_model_check(TR, art.chk)
     cfg.show.benchmark   && TxReport.report_benchmark(c, art.bench, scenario_indices)
     cfg.show.solve_time && !isnothing(art.timing) && TR.report_dcopf_solve_times(art.timing)
@@ -125,8 +113,6 @@ for art in artifacts
         joinpath(@__DIR__, "transmission_plots.jl"), c.base, art.A;
         path=joinpath(dir, "full_and_reduced_network.png"),
         open_after=cfg.show.open_plots,
-        title="$(basename(cfg.casefile)):  $(c.base.N) -> $(art.r.n_retained) buses  ·  " *
-              "eps = $(cfg.normalized_error_threshold)",
         binding_lines=findall(art.r.protected),
         congested_lines=selection.congested_lines,
         label_congested=true, label_retained=false)

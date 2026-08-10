@@ -241,8 +241,7 @@ function plot_reduction(c, A;
 
     axL = Axis(fig[1, 1], aspect=DataAspect(), backgroundcolor=SURFACE,
                titlesize=15, titlecolor=INK_SECOND,
-               title="ORIGINAL  ·  $(c.N) buses, $(c.Ln) lines\n" *
-                     "$(length(internal)) lines collapse into $(length(merged_reps)) clusters  ·  " *
+               title="$(length(internal)) lines collapse into $(length(merged_reps)) clusters  ·  " *
                      "$(length(external)) lines survive")
     # Contracting endpoints can leave several external lines joining the SAME pair
     # of super-nodes. They are all still distinct lines with their own ratings and
@@ -252,13 +251,10 @@ function plot_reduction(c, A;
     for l in external
         push!(get!(pair_lines, minmax(rep[c.Efrom[l]], rep[c.Eto[l]]), Int[]), l)
     end
-    distinct_pairs = length(pair_lines)
 
     axR = Axis(fig[1, 2], aspect=DataAspect(), backgroundcolor=SURFACE,
                titlesize=15, titlecolor=INK_SECOND,
-               title="REDUCED  ·  $(length(retained)) buses, $(length(external)) lines " *
-                     "over $(distinct_pairs) connections\n" *
-                     "largest cluster $(maximum(csize[retained])) buses  ·  " *
+               title="largest cluster $(maximum(csize[retained])) buses  ·  " *
                      "$(length(congested_ext)) congested, $(length(binding_ext)) protected")
     # Shared coordinates are only half the job: each Axis otherwise autoscales to
     # its OWN data, and the right panel holds a subset of the nodes, so it would
@@ -301,17 +297,12 @@ function plot_reduction(c, A;
     isempty(single) || scatter!(axL, pos[single];
                                 color=SINGLETON_COLOR, markersize=node_size * 0.6,
                                 strokewidth=0)
+    # No marker singles out the representative bus: any bus in a cluster could
+    # equally serve as its super-node, so every member gets the same plain dot.
     isempty(merged) || scatter!(axL, pos[merged];
                                 color=[color_of(rep[j]) for j in merged],
                                 markersize=node_size * 0.85,
                                 strokewidth=0.4, strokecolor=SURFACE)
-    # Super-nodes must be findable on the LEFT too: the bus each cluster collapses
-    # onto is drawn as a larger dark-ringed diamond, so the right panel's markers
-    # can be traced back to their originals.
-    scatter!(axL, pos[retained];
-             color=[color_of(i) for i in retained], marker=:diamond,
-             markersize=[node_size * (csize[i] > 1 ? 1.7 : 1.1) for i in retained],
-             strokewidth=1.1, strokecolor=INK_PRIMARY)
 
     # ---- right panel: super-nodes + surviving lines, same coordinates ----
     # Build every arc first, then draw by priority, so a later bundle's white
@@ -396,7 +387,7 @@ function plot_reduction(c, A;
     ]
     legend_labels = String[
         "merged cluster (its own internal lines)",
-        "super-node (both panels; area ∝ cluster size)",
+        "super-node (reduced panel; area ∝ cluster size)",
         "unmerged single bus",
         "external line — survives the reduction",
     ]

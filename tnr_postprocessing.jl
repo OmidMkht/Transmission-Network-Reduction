@@ -314,6 +314,7 @@ function solve_assigned_dc_opf_scenario(c::MultiScenarioTxReductionCase,
 
     model = Model(optimizer)
     set_optimizer_attribute(model, "OutputFlag", 0)
+    set_optimizer_attribute(model, "MIPGap", 0.00)
     isnothing(time_limit) || set_optimizer_attribute(model, "TimeLimit", time_limit)
     @variable(model, theta[1:N])
     @variable(model, pG[1:nG])
@@ -429,6 +430,7 @@ function repair_dispatch_on_original_scenario(c::MultiScenarioTxReductionCase,
 
     model = Model(optimizer)
     set_optimizer_attribute(model, "OutputFlag", 0)
+    set_optimizer_attribute(model, "MIPGap", 0.00)
     isnothing(time_limit) || set_optimizer_attribute(model, "TimeLimit", time_limit)
     @variable(model, theta[1:N])
     @variable(model, pG[1:nG])
@@ -767,6 +769,7 @@ function _dcopf_on_partition(c::MultiScenarioTxReductionCase, scenario_index::In
     model = direct ? direct_model(optimizer()) : Model(optimizer)
     set_optimizer_attribute(model, "OutputFlag", 0)
     set_optimizer_attribute(model, "Threads", threads)
+    set_optimizer_attribute(model, "MIPGap", 0.00)
     isnothing(time_limit) || set_optimizer_attribute(model, "TimeLimit", time_limit)
     # Ratings and generator limits go on as VARIABLE BOUNDS, not rows. A
     # double-sided @constraint becomes an MOI Interval, which direct_model cannot

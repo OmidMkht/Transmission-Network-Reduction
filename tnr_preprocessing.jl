@@ -113,6 +113,7 @@ function build_tx_case(casefile::AbstractString;
     # here would be too late to suppress the license banner.
     env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
     m = Model(() -> Gurobi.Optimizer(env))
+    set_optimizer_attribute(m, "MIPGap", 0.00)
     isnothing(time_limit) || set_optimizer_attribute(m, "TimeLimit", time_limit)
     @variable(m, th[1:N]); @variable(m, pG[1:nG]); @variable(m, pF[1:Ln])
     @constraint(m, th[j0] == 0)

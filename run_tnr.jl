@@ -35,6 +35,7 @@ cfg = (
     opf_time_limit      = 2 * 60.0,
     solve_time_limit    = 5 * 60.0,
     numeric_focus       = 3,
+    screening_tolerance = 1e-6,
 
     # cuts
     cycle_cut_lens      = (2, 3, 4),   # () = off; 2 = parallel lines, 3 = triangles, 4 = chordless 4-cycles

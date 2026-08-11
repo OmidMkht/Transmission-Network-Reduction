@@ -46,6 +46,22 @@ full-vs-reduced solve time, and writes everything to `outputs/case118_edge/`.
 Edit the `cfg` block at the top of `run_tnr.jl` to point at a different case
 file or change any setting -- that block is the only place you need to look.
 
+## Kron preprocessing
+
+`kron_reduction/` collapses every chain of degree-2, generator-free,
+uncongested buses into one equivalent series line before the MILP runs, then
+unfolds the result back onto the full bus set so every validation still runs
+against the true original network. It has its own runner on the same bundled
+case:
+
+```
+julia --project=. --startup-file=no kron_reduction/run_tnr_kron.jl
+```
+
+See [`kron_reduction/README.md`](kron_reduction/README.md) for the eligibility
+rules and the measured trade-off, and `reference/kron_preprocessing.pdf` for
+the formulation.
+
 ## Case data
 
 `case14` and `case118` ship in `case studies/` for the quick start above.
@@ -64,7 +80,8 @@ place it under `case studies/<filename>.m`.
 | `tnr_reporting.jl` | Console reports, plots, CSV output, the sweep driver |
 | `transmission_plots.jl` | Before/after network figure |
 | `run_tnr.jl` | Runner: one test case, one operating point |
-| `reference/` | Compiled paper describing the formulation this code implements |
+| `kron_reduction/` | Chain elimination before the MILP, and its own runner |
+| `reference/` | Compiled papers describing the formulations this code implements |
 
 `outputs/` is where every runner writes results -- it's gitignored and
 reproducible from the case data and `cfg` blocks above.

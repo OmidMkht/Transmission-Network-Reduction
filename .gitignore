@@ -8,13 +8,23 @@ outputs/
 # Paper source. Only the compiled PDF is published (see reference/); the .tex
 # stays local.
 # --------------------------------------------------------------------------- #
-transmission_network_reduction.tex
+*.tex
 *.aux
 *.out
 *.toc
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# --------------------------------------------------------------------------- #
+# Multi-scenario pipeline. Only runs against the ACTIVSg scenario matrices
+# below, which aren't published, so it stays local until it has a runner that
+# works on the bundled cases.
+# --------------------------------------------------------------------------- #
+tnr_multiscenario.jl
+run_tnr_multiscenario.jl
+run_scenario_dcopf.jl
+kron_reduction/run_tnr_kron_multiscenario.jl
 
 # --------------------------------------------------------------------------- #
 # Large / third-party case data. case14 and case118 are the only case files

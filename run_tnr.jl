@@ -16,6 +16,7 @@ using LinearAlgebra, Statistics, Dates, DelimitedFiles
 end
 TR = Main.TNR
 include(joinpath(@__DIR__, "tnr_reporting.jl"))
+include(joinpath(@__DIR__, "matpower_export.jl"))
 
 # ========================== CONFIGURATION ================================== #
 cfg = (
@@ -72,6 +73,10 @@ cfg = (
         plots          = true,
         open_plots     = false,
         write_files    = true,
+        # write the reduced network as a MATPOWER .m file too -- see
+        # matpower_export.jl. Off by default: most runs are exploratory, not
+        # meant to be published as an example case.
+        export_matpower = false,
     ),
 )
 # =========================================================================== #
@@ -108,6 +113,9 @@ for art in artifacts
     dir = TxReport.write_multiscenario_outputs(
         joinpath(cfg.output_dir, art.label), c, art,
         selection, selected, scenario_indices, cfg)
+
+    get(cfg.show, :export_matpower, false) && export_reduced_matpower(
+        cfg.casefile, c, art.r, joinpath(dir, "reduced_" * basename(cfg.casefile)))
 
     cfg.show.plots || continue
     TxReport.plot_network(

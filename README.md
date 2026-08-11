@@ -62,6 +62,14 @@ See [`kron_reduction/README.md`](kron_reduction/README.md) for the eligibility
 rules and the measured trade-off, and `reference/kron_preprocessing.pdf` for
 the formulation.
 
+## Reduced network examples
+
+[`reduced_cases/`](reduced_cases/) has three networks already reduced by this
+repo, exported as standalone MATPOWER `.m` files that load directly in
+MATPOWER or PowerModels -- no dependency on this repo or on the (much larger)
+original case files. See its README for exactly what settings produced each
+one and a caveat on one of them.
+
 ## Case data
 
 `case14` and `case118` ship in `case studies/` for the quick start above.

@@ -1,13 +1,5 @@
 # --------------------------------------------------------------------------- #
-# PREPROCESSING -- everything that turns raw inputs into a solvable case.
-#
-# Every function here works for BOTH the single-scenario and the multi-scenario
-# path: a single-scenario case is simply a MultiScenarioTxReductionCase with
-# S = 1 (see `build_single_scenario_case`), so there is one code path, one set
-# of windows, and one internal-transfer bound for both runners.
-#
-# Load order: this file FIRST -- it defines the two case structs that every
-# other file's methods dispatch on. Only the runners call `include`.
+# PREPROCESSING -- turns raw inputs into a solvable case.
 # --------------------------------------------------------------------------- #
 
 using PowerModels
@@ -58,9 +50,7 @@ function incidence_matrix(c::TxReductionCase)
 end
 
 
-# Parse a pglib .m case and build a consistent DC base operating point via a
-# DC-OPF (min gen cost). p is taken as the dispatch injection so p = E fhat holds
-# exactly; thetahat/fhat come from the same solve.
+# Parse a pglib .m case and build a DC base operating point (via a dcopf).
 function build_tx_case(casefile::AbstractString;
                        big_rate::Float64=1e3, time_limit=nothing)
     raw = PowerModels.parse_file(casefile)
@@ -92,7 +82,7 @@ function build_tx_case(casefile::AbstractString;
         Pd[idx_of(ld["load_bus"])] += Float64(ld["pd"])
     end
 
-    # in-service branches -> lines
+    # lines
     brs = data["branch"]
     brk = sort(collect(keys(brs)), by = x -> parse(Int, x))
     Efrom = Int[]; Eto = Int[]; Dx = Float64[]; frate = Float64[]
@@ -108,9 +98,7 @@ function build_tx_case(casefile::AbstractString;
     Ln = length(Efrom)
     j0 = something(findfirst(==(3), bus_type), 1)
 
-    # base DC-OPF for a consistent (p, thetahat, fhat). OutputFlag is set on the
-    # Env before it starts, not on the model after -- set_optimizer_attribute
-    # here would be too late to suppress the license banner.
+    # base DC-OPF.
     env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
     m = Model(() -> Gurobi.Optimizer(env))
     set_optimizer_attribute(m, "MIPGap", 0.00)
@@ -161,18 +149,7 @@ struct MultiScenarioTxReductionCase
 end
 
 """
-Build a ONE-SCENARIO case straight from a MATPOWER/pglib `.m` file.
-
-This is what lets a plain test case (case118, case300, ...) run through exactly
-the same model, benchmark and validation path as a 744-hour month: there is no
-separate single-scenario formulation, only S = 1. No scenario matrices, no
-`matrix_dir`, and no calendar are involved -- the single operating point is the
-base DC-OPF that `build_tx_case` already solves.
-
-Everything is read back out of that base point so the case is self-consistent by
-construction (p = generation - load, and p = E*fhat exactly), which is the same
-invariant `build_multiscenario_tx_case` checks after reconstructing flows from
-saved matrices.
+Build a case from a MATPOWER/pglib `.m` file (with one operating scenario).
 """
 function build_single_scenario_case(casefile::AbstractString;
                                     scenario_id::Int=1, time_limit=nothing)
@@ -200,19 +177,27 @@ function build_single_scenario_case(casefile::AbstractString;
 end
 
 """
-Scale every operating point consistently. A factor of 0.8 reduces load,
-generation, nodal injections, DC angles, and reference line flows by 20%.
-Topology, generator limits/costs, and line ratings are unchanged.
+Scale each bus's load -- `scale` is a scalar (uniform) or a length-N vector
+(per-bus) -- and redispatch: generation, injections, angles and flows are all
+re-solved from the new load via a fresh DC-OPF, not scaled along with it (a
+scaled load is not itself an economic dispatch). A no-op when `scale` is all
+ones -- the DC-OPF is skipped entirely rather than re-solving to the same
+answer.
 """
-function scale_operating_points(c::MultiScenarioTxReductionCase, factor::Real)
-    isfinite(factor) && factor > 0 ||
-        error("operating-point scale must be positive and finite")
-    alpha = Float64(factor)
-    return MultiScenarioTxReductionCase(
+function scale_operating_points(c::MultiScenarioTxReductionCase, scale;
+                                scenario_indices=axes(c.p, 2), kwargs...)
+    N = c.base.N
+    alpha = scale isa AbstractVector ? Vector{Float64}(scale) : fill(Float64(scale), N)
+    length(alpha) == N || error("scale must be a scalar or have $N entries")
+    all(isfinite, alpha) && all(>(0), alpha) ||
+        error("scale must be positive and finite")
+    all(==(1.0), alpha) && return c
+    scaled = MultiScenarioTxReductionCase(
         c.base, copy(c.scenario_ids), copy(c.bus_ids),
-        alpha .* c.load, alpha .* c.generation, alpha .* c.p,
-        alpha .* c.thetahat, alpha .* c.fhat,
+        alpha .* c.load, copy(c.generation), copy(c.p),
+        copy(c.thetahat), copy(c.fhat),
     )
+    return redispatch_dc_opf_scenarios(scaled, scenario_indices; kwargs...)
 end
 
 """Return a copy containing only the requested scenario columns."""
@@ -261,7 +246,7 @@ so the reporting and file-output code cannot tell the two apart.
 that IS the cover here: everything is included.
 """
 function all_scenarios_selection(c::MultiScenarioTxReductionCase, scenario_indices;
-                                 congestion_threshold::Float64=0.9999)
+                                 congestion_threshold::Float64=0.99)
     idx = Int.(collect(scenario_indices))
     isempty(idx) && error("At least one scenario is required")
     base = c.base

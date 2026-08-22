@@ -20,14 +20,16 @@ what the whole composition costs.
 
 ## Running it
 
+Set `kron = true` in the `RUN` block of `../run_tnr.jl`:
+
 ```
-julia --project=. --startup-file=no kron_reduction/run_tnr_kron.jl
+julia --project=. --startup-file=no run_tnr.jl
 ```
 
-Same bundled case and same operating point as `run_tnr.jl`, writing to
-`outputs/case118_kron/`. The `cfg` block at the top is the only place to look;
-set `kron_reduction.enabled = false` to get the plain run back through this
-same code path, which is how the two are meant to be compared.
+Writing to `outputs/case118_kron_edge/`. Setting it back to `false` gives the
+plain run through the same code path and the same settings, which is how the
+two are meant to be compared -- one flag is the only difference between them.
+It composes with `scenarios = :multi` the same way.
 
 ## Which buses are eliminated
 
@@ -75,7 +77,6 @@ way.
 | `kron_unfold.jl` | Boundary clustering -> full-size assignment matrix |
 | `kron_reporting.jl` | Sweep driver, console reports, CSV output |
 | `kron_plots.jl` | Three-panel figure: chains, boundary network, reduced network |
-| `run_tnr_kron.jl` | Runner: one test case, one operating point |
 
 Every validation and benchmark call inside `kron_reporting.jl` is the existing
 function from the parent directory, unmodified, run against the true full

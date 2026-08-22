@@ -43,20 +43,34 @@ julia --project=. --startup-file=no run_tnr.jl
 This builds `case studies/pglib_opf_case118_ieee.m` as a one-scenario case,
 solves the reduction MILP, validates the result against a DC-OPF, benchmarks
 full-vs-reduced solve time, and writes everything to `outputs/case118_edge/`.
-Edit the `cfg` block at the top of `run_tnr.jl` to point at a different case
-file or change any setting -- that block is the only place you need to look.
+
+`run_tnr.jl` is the only runner. Two switches at the top of it pick what runs:
+
+```julia
+RUN = (
+    scenarios = :single,   # :single = one operating point | :multi = hourly matrices
+    kron      = false,     # true = collapse degree-2 chains before the MILP
+    ...
+)
+```
+
+Everything below that block -- the model, the tolerances, the sweep, the
+validation -- is shared by all four combinations, so a change is tested the
+same way whichever one you run. The console prints a short digest; the full
+report for each setting lands in `<output_dir>/<setting>/report.txt`.
+
+`scenarios = :multi` runs a month of hourly scenarios instead of one operating
+point. It needs `tnr_multiscenario.jl` and the ACTIVSg scenario matrices,
+neither of which is published, so a fresh clone runs `:single`; asking for
+`:multi` stops with a message naming what is missing.
 
 ## Kron preprocessing
 
 `kron_reduction/` collapses every chain of degree-2, generator-free,
 uncongested buses into one equivalent series line before the MILP runs, then
 unfolds the result back onto the full bus set so every validation still runs
-against the true original network. It has its own runner on the same bundled
-case:
-
-```
-julia --project=. --startup-file=no kron_reduction/run_tnr_kron.jl
-```
+against the true original network. Set `kron = true` in `run_tnr.jl` to use
+it; outputs go to `outputs/case118_kron_edge/`.
 
 See [`kron_reduction/README.md`](kron_reduction/README.md) for the eligibility
 rules and the measured trade-off, and `reference/kron_preprocessing.pdf` for
@@ -87,8 +101,10 @@ place it under `case studies/<filename>.m`.
 | `tnr_postprocessing.jl` | Feasibility checks, DC-OPF validation, solve-time benchmark |
 | `tnr_reporting.jl` | Console reports, plots, CSV output, the sweep driver |
 | `transmission_plots.jl` | Before/after network figure |
-| `run_tnr.jl` | Runner: one test case, one operating point |
-| `kron_reduction/` | Chain elimination before the MILP, and its own runner |
+| `run_tnr.jl` | The runner: single/multi scenario, with/without Kron |
+| `matpower_export.jl` | Write a reduced network back out as a MATPOWER `.m` file |
+| `kron_reduction/` | Chain elimination before the MILP |
+| `reduced_cases/` | Reduced networks published as standalone MATPOWER `.m` files |
 | `reference/` | Compiled papers describing the formulations this code implements |
 
 `outputs/` is where every runner writes results -- it's gitignored and

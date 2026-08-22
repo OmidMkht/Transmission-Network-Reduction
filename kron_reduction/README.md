@@ -53,21 +53,20 @@ no longer absorb a chain's first bus and leave the second. The reachable set
 of clusterings is a strict subset of the full model's, so the reduction at a
 given tolerance is weakly worse. What is bought is a smaller MILP.
 
-Whether that pays depends entirely on the case and the time budget, so it is
-measured rather than assumed. On the bundled case118 it does not pay:
+Which side wins depends on the case and the time budget, and it does change
+sign between cases, so it is measured rather than assumed. Run the same case
+both ways -- `kron = true` and `kron = false` change nothing else -- and
+compare `relaxation_comparison.csv`.
 
-| case118, eps = 10%, no relaxation | plain | Kron |
-|---|---|---|
-| buses retained | 33 / 118 (72.0%) | 40 / 118 (66.1%) |
-| MILP solve time | 12.3 s | 6.1 s |
-| reduced DC-OPF speedup (work units) | 3.03x | 1.98x |
+The shape of the answer: a case whose MILP already solves to optimality has
+nothing to gain, since the elimination can only cost it reduction, while a
+case whose MILP hits its time limit can come out ahead, because the smaller
+model gets further inside the same budget.
 
-case118 halves a MILP time that was never the bottleneck, and pays with a
-coarser reduction and a weaker downstream speedup. The elimination earns its
-place on networks where the full MILP does not finish -- on ACTIVSg2000 the
-boundary MILP reaches a materially better incumbent inside the same one-hour
-budget. Run both and read `relaxation_comparison.csv` before assuming either
-way.
+One thing to watch when reading that comparison. With `collapse_external_chains`
+on (the default) the Kron side's `n_retained` counts chain interiors as merged
+even where the equivalent line stayed external, while the network actually
+validated reinserts them. Set it to `false` for a like-for-like bus count.
 
 ## Files
 

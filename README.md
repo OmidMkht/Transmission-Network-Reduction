@@ -70,7 +70,7 @@ neither of which is published, so a fresh clone runs `:single`; asking for
 uncongested buses into one equivalent series line before the MILP runs, then
 unfolds the result back onto the full bus set so every validation still runs
 against the true original network. Set `kron = true` in `run_tnr.jl` to use
-it; outputs go to `outputs/case118_kron_edge/`.
+it; it composes with either scenario mode.
 
 See [`kron_reduction/README.md`](kron_reduction/README.md) for the eligibility
 rules and the measured trade-off, and `reference/kron_preprocessing.pdf` for
@@ -107,8 +107,8 @@ place it under `case studies/<filename>.m`.
 | `reduced_cases/` | Reduced networks published as standalone MATPOWER `.m` files |
 | `reference/` | Compiled papers describing the formulations this code implements |
 
-`outputs/` is where every runner writes results -- it's gitignored and
-reproducible from the case data and `cfg` blocks above.
+`outputs/` is where results are written -- it's gitignored and reproducible
+from the case data and the config block in `run_tnr.jl`.
 
 ## License
 

@@ -57,8 +57,8 @@ internally.
 ## How these were produced
 
 `matpower_export.jl`'s `export_reduced_matpower`, called from `run_tnr.jl`
-(case118, case500_goc) and the local multi-scenario runner (ACTIVSg200) with
-`cfg.show.export_matpower = true`. ACTIVSg200's own scenario-generation
+with `show.export_matpower = true` -- `scenarios = :single` for case118 and
+case500_goc, `scenarios = :multi` for ACTIVSg200. ACTIVSg200's own scenario-generation
 pipeline is not published in this repo (see the root README's Kron section
 for the same pattern: derived artifact published, generating pipeline kept
 local) -- only the reduced network itself.

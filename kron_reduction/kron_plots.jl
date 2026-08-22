@@ -53,7 +53,8 @@ function plot_kron_reduction(c_full, kron_map, c_boundary, A_full;
                              congested_line_labels=nothing,
                              label_congested::Bool=true,
                              binding_lines=nothing,
-                             max_congested_labels::Int=30)
+                             max_congested_labels::Int=30,
+                             io::IO=stdout)
     c = c_full.base
     Aint = round.(Int, A_full)
     retained, rep = TxReport._reduction_maps(Aint)
@@ -392,7 +393,7 @@ function plot_kron_reduction(c_full, kron_map, c_boundary, A_full;
     if path !== nothing
         mkpath(dirname(abspath(path)))
         save(path, fig)
-        println("wrote ", path)
+        println(io, "wrote ", path)
     end
     return fig
 end

@@ -246,18 +246,18 @@ function plot_kron_network(plots_file, kron_plots_file, c_full, kron_map, c_boun
 end
 
 "Standalone printout of chain counts/sizes -- run once, before the sweep."
-function report_kron_chains(c_full, kron_map)
-    TxReport.section("Kron reduction")
-    println("  full network        = ", kron_map.full_N, " buses, ",
+function report_kron_chains(c_full, kron_map; io::IO=stdout)
+    TxReport.section("Kron reduction"; io=io)
+    println(io, "  full network        = ", kron_map.full_N, " buses, ",
             c_full.base.Ln, " lines")
-    println("  boundary network    = ", kron_map.boundary_N, " buses  ",
+    println(io, "  boundary network    = ", kron_map.boundary_N, " buses  ",
             "(", kron_map.full_N - kron_map.boundary_N, " eliminated)")
-    println("  chains kept         = ", length(kron_map.chains))
-    println("  rings (untouched)   = ", length(kron_map.rings))
-    println("  self-loop chains (untouched) = ", length(kron_map.self_loop_chains))
+    println(io, "  chains kept         = ", length(kron_map.chains))
+    println(io, "  rings (untouched)   = ", length(kron_map.rings))
+    println(io, "  self-loop chains (untouched) = ", length(kron_map.self_loop_chains))
     isempty(kron_map.chains) && return nothing
     lens = [length(ch.interior) for ch in kron_map.chains]
-    println("  chain length: min=", minimum(lens), "  median=", sort(lens)[cld(end,2)],
+    println(io, "  chain length: min=", minimum(lens), "  median=", sort(lens)[cld(end,2)],
             "  max=", maximum(lens))
     return nothing
 end

@@ -63,18 +63,18 @@ function model_feasibility_check_multiscenario(c::MultiScenarioTxReductionCase, 
             genuine=objective_is_integer && worst <= tol, tol)
 end
 
-function print_model_feasibility_check_multiscenario(chk)
-    println("   objective (raw sum of c_l) = ", chk.objective_raw)
-    println("   objective is exact integer = ", chk.objective_is_integer)
-    println("   integrality residual       = ", chk.integrality)
-    println("   flow-definition residual   = ", chk.flow_definition)
-    println("   nodal-balance residual      = ", chk.balance)
-    println("   external-window violation  = ", chk.window)
-    println("   internal-flow violation     = ", chk.internal_flow)
-    println("   external-transfer violation = ", chk.external_transfer)
-    println("   protected-line violation    = ", chk.protected)
-    println("   worst model residual        = ", chk.worst)
-    println("   GENUINE                     = ", chk.genuine)
+function print_model_feasibility_check_multiscenario(chk; io::IO=stdout)
+    println(io, "   objective (raw sum of c_l) = ", chk.objective_raw)
+    println(io, "   objective is exact integer = ", chk.objective_is_integer)
+    println(io, "   integrality residual       = ", chk.integrality)
+    println(io, "   flow-definition residual   = ", chk.flow_definition)
+    println(io, "   nodal-balance residual      = ", chk.balance)
+    println(io, "   external-window violation  = ", chk.window)
+    println(io, "   internal-flow violation     = ", chk.internal_flow)
+    println(io, "   external-transfer violation = ", chk.external_transfer)
+    println(io, "   protected-line violation    = ", chk.protected)
+    println(io, "   worst model residual        = ", chk.worst)
+    println(io, "   GENUINE                     = ", chk.genuine)
 end
 
 # =============== 3. WINDOW SCREENING AND MONTHLY BENCHMARK ================== #
@@ -854,46 +854,46 @@ function benchmark_dcopf_solve_times(c::MultiScenarioTxReductionCase, Aval,
 end
 
 """Print the full-vs-reduced solve-time benchmark."""
-function report_dcopf_solve_times(bench)
+function report_dcopf_solve_times(bench; io::IO=stdout)
     df, dr = bench.dims_full, bench.dims_reduced
-    println("\n", repeat("=", 78))
-    println("DC-OPF SOLVE-TIME BENCHMARK  (", bench.repeats,
+    println(io, "\n", repeat("=", 78))
+    println(io, "DC-OPF SOLVE-TIME BENCHMARK  (", bench.repeats,
             " repeats/model, Threads=", bench.threads, ", min of repeats)")
-    println(repeat("=", 78))
-    println("  model size    full    ", df.n_bus, " buses, ", df.n_line,
+    println(io, repeat("=", 78))
+    println(io, "  model size    full    ", df.n_bus, " buses, ", df.n_line,
             " lines, ", df.n_gen, " gens")
-    println("                reduced ", dr.n_bus, " buses, ", dr.n_line,
+    println(io, "                reduced ", dr.n_bus, " buses, ", dr.n_line,
             " lines, ", dr.n_gen, " gens",
             "   (", round(100 * (1 - dr.n_bus / df.n_bus), digits=1), "% fewer buses, ",
             round(100 * (1 - dr.n_line / df.n_line), digits=1), "% fewer lines)")
     n = count(bench.both_optimal)
-    println("  scenarios both solved to optimality = ", n, " / ",
+    println(io, "  scenarios both solved to optimality = ", n, " / ",
             length(bench.scenario_indices))
     if n == 0
-        println("  no comparable scenarios -- nothing to report")
+        println(io, "  no comparable scenarios -- nothing to report")
         return
     end
     if bench.solve_time_resolved
-        println("  solve_time(model)   full = ", round(bench.total_solve_time_full, digits=3),
+        println(io, "  solve_time(model)   full = ", round(bench.total_solve_time_full, digits=3),
                 " s     reduced = ", round(bench.total_solve_time_reduced, digits=3),
                 " s     -> ", round(bench.speedup_solve_time, digits=2), "x")
     else
-        println("  solve_time(model)   UNRESOLVED -- Gurobi's Runtime timer returns")
-        println("                      0.0 on models this small (a solve is well under")
-        println("                      1 ms). Use the wall and work rows below.")
+        println(io, "  solve_time(model)   UNRESOLVED -- Gurobi's Runtime timer returns")
+        println(io, "                      0.0 on models this small (a solve is well under")
+        println(io, "                      1 ms). Use the wall and work rows below.")
     end
-    println("  wall clock / solve  full = ", round(1000 * bench.total_wall_full / n, digits=3),
+    println(io, "  wall clock / solve  full = ", round(1000 * bench.total_wall_full / n, digits=3),
             " ms    reduced = ", round(1000 * bench.total_wall_reduced / n, digits=3),
             " ms    -> ", round(bench.speedup_wall, digits=2), "x")
-    println("  work units          full = ", round(bench.total_work_full, digits=4),
+    println(io, "  work units          full = ", round(bench.total_work_full, digits=4),
             "      reduced = ", round(bench.total_work_reduced, digits=4),
             "      -> ", round(bench.speedup_work, digits=2), "x   <-- deterministic")
-    println("  simplex iterations  full = ", round(Int, sum(bench.iters_full[bench.both_optimal])),
+    println(io, "  simplex iterations  full = ", round(Int, sum(bench.iters_full[bench.both_optimal])),
             "       reduced = ", round(Int, sum(bench.iters_reduced[bench.both_optimal])),
             "       -> ", round(bench.speedup_iters, digits=2), "x")
     sp = filter(isfinite, bench.work_speedup[bench.both_optimal])
     if length(sp) > 1
-        println("  per-scenario work speedup: min ", round(minimum(sp), digits=2),
+        println(io, "  per-scenario work speedup: min ", round(minimum(sp), digits=2),
                 "x   q25 ", round(quantile(sp, 0.25), digits=2),
                 "x   median ", round(median(sp), digits=2),
                 "x   q75 ", round(quantile(sp, 0.75), digits=2),
@@ -902,6 +902,6 @@ function report_dcopf_solve_times(bench)
     gap = abs.(bench.objective_reduced .- bench.objective_full) ./
           max.(abs.(bench.objective_full), 1e-9) .* 100
     gapv = filter(isfinite, gap[bench.both_optimal])
-    println("  objective difference (context, not a timing result): max ",
+    println(io, "  objective difference (context, not a timing result): max ",
             round(maximum(gapv; init=0.0), digits=4), "%")
 end

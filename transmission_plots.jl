@@ -185,7 +185,8 @@ function plot_reduction(c, A;
                         congested_line_labels=nothing,
                         label_congested::Bool=true,
                         binding_lines=nothing,
-                        max_congested_labels::Int=30)
+                        max_congested_labels::Int=30,
+                        io::IO=stdout)
     Aint = round.(Int, A)
     retained, rep = _reduction_maps(Aint)
     pos === nothing && (pos = network_layout(c; algorithm=algorithm, seed=seed))
@@ -426,7 +427,7 @@ function plot_reduction(c, A;
     if path !== nothing
         mkpath(dirname(abspath(path)))
         save(path, fig)
-        println("wrote ", path)
+        println(io, "wrote ", path)
     end
     return fig
 end

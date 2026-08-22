@@ -29,7 +29,9 @@ using Graphs
 # Small formatting helpers
 # --------------------------------------------------------------------------- #
 
-section(title) = (println(); println(title); println(repeat("-", length(title))))
+section(title; io::IO=stdout) =
+    (println(io); println(io, title); println(io, repeat("-", length(title))))
+section(io::IO, title) = section(title; io=io)
 
 "Round for display without turning a meaningful tiny number into 0.0."
 function sig(x, digits::Int=4)
@@ -116,54 +118,54 @@ end
 # Multi-scenario report sections
 # --------------------------------------------------------------------------- #
 
-function report_case(c, selection, cfg, month_indices)
-    section("Case")
-    println("  month                     = ", monthname(cfg.month), " ", cfg.year,
+function report_case(c, selection, cfg, month_indices; io::IO=stdout)
+    section(io, "Case")
+    println(io, "  month                     = ", monthname(cfg.month), " ", cfg.year,
             "   (", length(month_indices), " hourly scenarios)")
-    println("  operating-point/load scale= ", cfg.operating_point_scale,
+    println(io, "  operating-point/load scale= ", cfg.operating_point_scale,
             "   line-limit scale = ", cfg.line_limit_scale)
-    println("  congestion definition     = |flow| / rating >= ", cfg.near_limit_threshold)
+    println(io, "  congestion definition     = |flow| / rating >= ", cfg.near_limit_threshold)
     worst_util, worst_at = findmax(selection.utilization)
-    println("  max monthly utilization   = ", sig(worst_util),
+    println(io, "  max monthly utilization   = ", sig(worst_util),
             "  (scenario ID ", c.scenario_ids[month_indices[worst_at[2]]],
             ", line ", worst_at[1], ")")
-    println("  congested-line union      = ", length(selection.congested_lines), " lines")
-    println("  seed ranking              = ", get(selection, :ranking, :none),
+    println(io, "  congested-line union      = ", length(selection.congested_lines), " lines")
+    println(io, "  seed ranking              = ", get(selection, :ranking, :none),
             "  (biggest first; :flow = sum |line flow|, :load = total demand)")
-    println("  min set-cover / seed size = ", selection.minimum_cover_size,
+    println(io, "  min set-cover / seed size = ", selection.minimum_cover_size,
             " / ", selection.selected_count,
             "   (cover is a hard requirement, rank fills the rest)")
-    println("  seed scenario IDs         = ", join(selection.scenario_ids, ", "))
-    isempty(selection.congested_lines) && println(
+    println(io, "  seed scenario IDs         = ", join(selection.scenario_ids, ", "))
+    isempty(selection.congested_lines) && println(io, 
         "  WARNING: no line meets the congestion threshold this month; " *
         "congestion coverage is vacuous and the selector simply took the highest-stress hours.")
     return nothing
 end
 
-function report_reduction(c, r, A)
-    section("1) Reduction summary")
+function report_reduction(c, r, A; io::IO=stdout)
+    section(io, "1) Reduction summary")
     sizes = vec(sum(A, dims=2))
     sizes = sizes[sizes .> 0]
-    println("  status / solve time = ", r.status, "  /  ", sig(r.solve_time), " s")
-    println("  reduction           = ",
+    println(io, "  status / solve time = ", r.status, "  /  ", sig(r.solve_time), " s")
+    println(io, "  reduction           = ",
             pct(100 * (c.base.N - r.n_retained) / c.base.N, 1),
             "  (", r.n_retained, " / ", c.base.N, " buses retained)")
-    println("  internal / external = ", r.n_internal_lines, " / ", r.n_external_lines, " lines")
-    println("  largest cluster     = ", maximum(sizes), " buses")
+    println(io, "  internal / external = ", r.n_internal_lines, " / ", r.n_external_lines, " lines")
+    println(io, "  largest cluster     = ", maximum(sizes), " buses")
     if get(r, :merge_exact_mode, :off) !== :off
-        println("  exactly-mergeable   = ", r.n_merge_lines, " lines ",
+        println(io, "  exactly-mergeable   = ", r.n_merge_lines, " lines ",
                 r.merge_exact_mode === :fix ? "FIXED internal" : "warm-started",
                 "   (", r.n_merge_bridges, " bridges, ",
                 r.n_merge_leaf_blocks, " leaf blocks)")
-        println("                        provably zero flow error elsewhere, so this",
+        println(io, "                        provably zero flow error elsewhere, so this",
                 r.merge_exact_mode === :fix ?
                 " cannot change the optimum -- only the search" :
                 " is only a hint; the solver may still choose otherwise")
     end
     if get(r, :n_lmp_rows, 0) > 0
-        println("  LMP separation      = ", r.n_lmp_rows, " shortest-path rows at ",
+        println(io, "  LMP separation      = ", r.n_lmp_rows, " shortest-path rows at ",
                 r.lmp_threshold, " \$/MWh")
-        println("                        ", r.n_lmp_separated, " / ",
+        println(io, "                        ", r.n_lmp_separated, " / ",
                 length(r.lmp_pairs), " constrained pairs came out separated",
                 r.n_lmp_still_merged == 0 ? "" :
                 ";  " * string(r.n_lmp_still_merged) *
@@ -173,158 +175,201 @@ function report_reduction(c, r, A)
     return nothing
 end
 
-function report_model_check(TR, chk)
-    section("2) Feasibility of the returned MILP point")
-    TR.print_model_feasibility_check_multiscenario(chk)
+function report_model_check(TR, chk; io::IO=stdout)
+    section(io, "2) Feasibility of the returned MILP point")
+    TR.print_model_feasibility_check_multiscenario(chk; io=io)
     return chk
 end
 
-function report_benchmark(c, bench, month_indices)
-    section("3) Benchmark over all $(length(month_indices)) monthly scenarios")
+function report_benchmark(c, bench, month_indices; io::IO=stdout)
+    section(io, "3) Benchmark over all $(length(month_indices)) monthly scenarios")
     mva = c.base.baseMVA
-    println("  scenarios inside reduction windows = ", bench.n_window_feasible,
+    println(io, "  scenarios inside reduction windows = ", bench.n_window_feasible,
             " / ", bench.n_scenarios,
             "  (", pct(100 * bench.window_feasible_fraction, 2), ")")
-    println("  worst window violation             = ", sig(mva * bench.worst_window_violation), " MW")
-    println("  p95 / mean window violation        = ", sig(mva * bench.p95_window_violation),
+    println(io, "  worst window violation             = ", sig(mva * bench.worst_window_violation), " MW")
+    println(io, "  p95 / mean window violation        = ", sig(mva * bench.p95_window_violation),
             " / ", sig(mva * bench.mean_window_violation), " MW")
-    println("  worst external flow error          = ", sig(bench.max_external_normalized_error),
+    println(io, "  worst external flow error          = ", sig(bench.max_external_normalized_error),
             "  (normalized by rating)")
-    println("  worst all-line flow difference     = ", sig(bench.max_all_line_normalized_error),
+    println(io, "  worst all-line flow difference     = ", sig(bench.max_all_line_normalized_error),
             "  (includes lines made internal)")
-    println("  max absolute flow difference       = ", sig(mva * bench.max_absolute_flow_error), " MW")
-    println("  max reduced-network overload       = ", sig(mva * bench.max_rating_overload), " MW")
-    println()
-    println("  external (surviving) lines overloaded in the reduced network:")
+    println(io, "  max absolute flow difference       = ", sig(mva * bench.max_absolute_flow_error), " MW")
+    println(io, "  max reduced-network overload       = ", sig(mva * bench.max_rating_overload), " MW")
+    println(io)
+    println(io, "  external (surviving) lines overloaded in the reduced network:")
     plural(n, word) = string(n, " ", word, n == 1 ? "" : "s")
-    println("    vs plain RATING    = ", plural(bench.n_lines_over_rating, "line"), " in ",
+    println(io, "    vs plain RATING    = ", plural(bench.n_lines_over_rating, "line"), " in ",
             bench.n_scenarios_over_rating, " / ", bench.n_scenarios, " scenarios",
             "   (", plural(bench.n_pairs_over_rating, "line-hour pair"), ", worst ",
             sig(mva * bench.max_overload_vs_rating), " MW)")
-    println("    vs ADJUSTED cap    = ", plural(bench.n_lines_over_adjusted, "line"), " in ",
+    println(io, "    vs ADJUSTED cap    = ", plural(bench.n_lines_over_adjusted, "line"), " in ",
             bench.n_scenarios_over_adjusted, " / ", bench.n_scenarios, " scenarios",
             "   (", plural(bench.n_pairs_over_adjusted, "line-hour pair"), ", worst ",
             sig(mva * bench.max_overload_vs_adjusted), " MW)")
-    println("    ADJUSTED cap = rating + delta on a relaxed congested line. A line past")
-    println("    the rating but inside its adjusted cap is doing what the model allowed;")
-    println("    one past the ADJUSTED cap escaped even that -- the clustering is at fault.")
+    println(io, "    ADJUSTED cap = rating + delta on a relaxed congested line. A line past")
+    println(io, "    the rating but inside its adjusted cap is doing what the model allowed;")
+    println(io, "    one past the ADJUSTED cap escaped even that -- the clustering is at fault.")
     if !isempty(bench.lines_over_rating)
         worst_lines = sort(bench.lines_over_rating;
                            by=l -> -bench.overload_hours_by_line[l])
-        println("    most frequently overloaded: ",
+        println(io, "    most frequently overloaded: ",
                 join(["L$l ($(bench.overload_hours_by_line[l]) h)"
                       for l in first(worst_lines, 8)], ", "))
     end
-    println("  congested lines made internal      = ", length(bench.congested_internal),
+    println(io, "  congested lines made internal      = ", length(bench.congested_internal),
             isempty(bench.congested_internal) ? "" : "   <-- coverage/protection failure")
-    println("  worst scenario ID / line           = ", bench.screen.worst_scenario_id,
+    println(io, "  worst scenario ID / line           = ", bench.screen.worst_scenario_id,
             " / ", bench.screen.worst_line)
     return nothing
 end
 
-function report_dcopf(c, val)
-    section("4) Full-vs-reduced DC-OPF validation")
+function report_dcopf(c, val; io::IO=stdout)
+    section(io, "4) Full-vs-reduced DC-OPF validation")
     mva = c.base.baseMVA
     H = length(val.scenario_indices)
-    println("  Pmin relaxed to zero               = ", val.relax_pmin)
-    println("  both DC-OPFs solved                = ", val.n_dcopf_feasible, " / ", H)
-    println("  line limits used here              = TRUE ratings (frate), NOT the relaxed cap")
-    println("    the congestion relaxation delta enters only the MILP window and the")
-    println("    window benchmark. It reaches this section solely through the clustering")
-    println("    it produced, so these numbers are directly comparable across settings.")
-    println()
-    println("  4a) strict pass/fail")
-    println("      reduced dispatch feasible on original network = ",
+    println(io, "  Pmin relaxed to zero               = ", val.relax_pmin)
+    println(io, "  both DC-OPFs solved                = ", val.n_dcopf_feasible, " / ", H)
+    println(io, "  line limits used here              = TRUE ratings (frate), NOT the relaxed cap")
+    println(io, "    the congestion relaxation delta enters only the MILP window and the")
+    println(io, "    window benchmark. It reaches this section solely through the clustering")
+    println(io, "    it produced, so these numbers are directly comparable across settings.")
+    println(io)
+    println(io, "  4a) strict pass/fail")
+    println(io, "      reduced dispatch feasible on original network = ",
             val.n_dispatch_feasible, " / ", H,
             "   (tolerance ", val.relative_tolerance, " of rating)")
-    println("      objective gap <= ", val.objective_tolerance_pct, "%                      = ",
+    println(io, "      objective gap <= ", val.objective_tolerance_pct, "%                      = ",
             val.n_objective_within_tolerance, " / ", H)
-    println("      max LMP difference <= ", val.lmp_tolerance, " \$/MWh          = ",
+    println(io, "      max LMP difference <= ", val.lmp_tolerance, " \$/MWh          = ",
             val.n_lmp_within_tolerance, " / ", H)
-    println("      worst absolute objective change              = ",
+    println(io, "      worst absolute objective change              = ",
             pct(val.worst_abs_objective_change_pct))
-    println("      worst LMP difference                         = ",
+    println(io, "      worst LMP difference                         = ",
             sig(val.worst_lmp_error), " \$/MWh")
-    println()
-    println("  4b) graded severity  (stays comparable when the strict test is uniformly \"fail\")")
-    println("      worst / mean full-network utilization        = ",
+    println(io)
+    println(io, "  4b) graded severity  (stays comparable when the strict test is uniformly \"fail\")")
+    println(io, "      worst / mean full-network utilization        = ",
             sig(val.worst_max_utilization), " / ", sig(val.mean_max_utilization),
             "   (1.0 = exactly at rating)")
-    println("      worst original-network overload              = ",
+    println(io, "      worst original-network overload              = ",
             sig(mva * val.worst_overload), " MW")
-    println("      worst total overload over all lines          = ",
+    println(io, "      worst total overload over all lines          = ",
             sig(mva * val.worst_total_overload), " MW")
-    println("      most overloaded lines in a single hour       = ", val.max_violating_lines)
-    println()
-    println("  4c) spuriously binding lines  (the PESSIMISTIC error, opposite of an overload)")
-    println("      a line at its rating in the REDUCED dispatch but slack in the true")
-    println("      full-network optimum. Nothing is violated -- the reduction simply")
-    println("      believes a corridor is full when it is not, pushing the OPF off the")
-    println("      cheap dispatch. This is where a cost gap with NO feasibility failure")
-    println("      comes from.")
-    println("      hours with >= 1 spurious binding line   = ",
+    println(io, "      most overloaded lines in a single hour       = ", val.max_violating_lines)
+    println(io)
+    println(io, "  4c) spuriously binding lines  (the PESSIMISTIC error, opposite of an overload)")
+    println(io, "      a line at its rating in the REDUCED dispatch but slack in the true")
+    println(io, "      full-network optimum. Nothing is violated -- the reduction simply")
+    println(io, "      believes a corridor is full when it is not, pushing the OPF off the")
+    println(io, "      cheap dispatch. This is where a cost gap with NO feasibility failure")
+    println(io, "      comes from.")
+    println(io, "      hours with >= 1 spurious binding line   = ",
             val.n_hours_with_spurious_binding, " / ", H)
-    println("      distinct lines ever spuriously binding  = ", val.n_spurious_lines)
-    println("      most in a single hour                   = ", val.max_spurious_binding,
+    println(io, "      distinct lines ever spuriously binding  = ", val.n_spurious_lines)
+    println(io, "      most in a single hour                   = ", val.max_spurious_binding,
             "   (binding tolerance ", val.binding_tolerance, " of rating)")
     if val.n_spurious_lines > 0
         worst = sort(findall(>(0), val.line_spurious_hours);
                      by=l -> -val.line_spurious_hours[l])
-        println("      most frequent: ",
+        println(io, "      most frequent: ",
                 join(["L$l ($(val.line_spurious_hours[l]) h)" for l in first(worst, 8)], ", "))
-        println("      => these corridors are over-constrained by the clustering; a better")
-        println("         clustering around them would recover cost, not feasibility")
+        println(io, "      => these corridors are over-constrained by the clustering; a better")
+        println(io, "         clustering around them would recover cost, not feasibility")
     end
     if val.measure_repair
-        println()
-        println("  4d) repair economics  (cheapest generation move that makes the reduced")
-        println("      dispatch work on the full network)")
-        println("      hours repairable                             = ",
+        println(io)
+        println(io, "  4d) repair economics  (cheapest generation move that makes the reduced")
+        println(io, "      dispatch work on the full network)")
+        println(io, "      hours repairable                             = ",
                 val.n_repair_feasible, " / ", H,
                 val.n_repair_feasible == H ? "" :
                 "   <-- an unrepairable hour means the FULL network cannot serve it")
-        println("      worst / mean redispatch                      = ",
+        println(io, "      worst / mean redispatch                      = ",
                 sig(mva * val.worst_repair_redispatch), " / ",
                 sig(mva * val.mean_repair_redispatch), " MW")
-        println("      worst / mean repaired-cost gap vs optimum    = ",
+        println(io, "      worst / mean repaired-cost gap vs optimum    = ",
                 pct(val.worst_repair_cost_pct), " / ", pct(val.mean_repair_cost_pct))
     end
     return nothing
 end
 
 "Per-iteration trace of the scenario-generation loop."
-function report_scenario_generation(c, gen)
-    section("0) Scenario generation")
+# --------------------------------------------------------------------------- #
+# Console digest -- the only thing a run prints by default.
+#
+# Three blocks, because a run is really asked three questions: how much did it
+# reduce, did the reduced flows stay inside their own windows, and does the
+# reduced dispatch survive on the true full network. Everything else -- the
+# residual check, the solve-time benchmark, the graded severity, the overload
+# anatomy, the sweep table -- is still produced in full and goes to report.txt.
+# --------------------------------------------------------------------------- #
+function report_digest(c, art, month_indices; io::IO=stdout)
+    println(io)
+    println(io, repeat("=", 78))
+    println(io, "RESULTS:  ", relaxation_pretty(art.mode, art.delta))
+    println(io, repeat("=", 78))
+
+    report_reduction(c, art.r, art.A; io=io)
+
+    bench = art.bench
+    section(io, "3) Benchmark over all $(length(month_indices)) monthly scenarios")
+    println(io, "  scenarios inside reduction windows = ", bench.n_window_feasible,
+            " / ", bench.n_scenarios,
+            "  (", pct(100 * bench.window_feasible_fraction, 2), ")")
+    println(io, "  worst external flow error          = ",
+            sig(bench.max_external_normalized_error), "  (normalized by rating)")
+
+    val = art.val
+    isnothing(val) && return nothing
+    H = length(val.scenario_indices)
+    section(io, "4a) Full-vs-reduced DC-OPF: strict pass/fail")
+    println(io, "  reduced dispatch feasible on original network = ",
+            val.n_dispatch_feasible, " / ", H,
+            "   (tolerance ", val.relative_tolerance, " of rating)")
+    println(io, "  objective gap <= ", val.objective_tolerance_pct, "%                      = ",
+            val.n_objective_within_tolerance, " / ", H)
+    println(io, "  max LMP difference <= ", val.lmp_tolerance, " \$/MWh          = ",
+            val.n_lmp_within_tolerance, " / ", H)
+    println(io, "  worst absolute objective change              = ",
+            pct(val.worst_abs_objective_change_pct))
+    println(io, "  worst LMP difference                         = ",
+            sig(val.worst_lmp_error), " \$/MWh")
+    return nothing
+end
+
+function report_scenario_generation(c, gen; io::IO=stdout)
+    section(io, "0) Scenario generation")
     mva = c.base.baseMVA
-    println("  seed scenarios   = ", length(gen.seed),
+    println(io, "  seed scenarios   = ", length(gen.seed),
             "   final active = ", length(gen.active),
             "   iterations = ", gen.iterations)
-    println("  converged        = ", gen.converged,
+    println(io, "  converged        = ", gen.converged,
             gen.converged ?
             "   (no monthly hour violates its window)" :
             "   <-- some monthly hours still violate")
     n_structural_fixes = count(h -> h.structural, gen.history)
-    n_structural_fixes > 0 && println("  shorted-protected-line fixes applied = ", n_structural_fixes,
+    n_structural_fixes > 0 && println(io, "  shorted-protected-line fixes applied = ", n_structural_fixes,
             "  (a protected line's endpoints got merged via other internal lines;",
             " see the trace below)")
     if !isempty(gen.structural_failure)
-        println()
-        println("  UNRESOLVED -- protected line(s) ", join(gen.structural_failure, ", "),
+        println(io)
+        println(io, "  UNRESOLVED -- protected line(s) ", join(gen.structural_failure, ", "),
                 " are still shorted by a path of internal lines, and every hour that")
-        println("  stresses them is already active. That combination should be provably")
-        println("  infeasible under an exact solve, so this points to solver tolerance")
-        println("  (IntFeasTol/FeasibilityTol) rather than a genuine model limit.")
+        println(io, "  stresses them is already active. That combination should be provably")
+        println(io, "  infeasible under an exact solve, so this points to solver tolerance")
+        println(io, "  (IntFeasTol/FeasibilityTol) rather than a genuine model limit.")
     end
     header = @sprintf("%5s %8s %7s %10s %11s %11s %9s %s",
                       "iter", "active", "buses", "int.lines",
                       "worst above", "worst below", "bad hrs", "added IDs")
-    println("  ", header)
-    println("  ", repeat("-", length(header)))
+    println(io, "  ", header)
+    println(io, "  ", repeat("-", length(header)))
     for h in gen.history
         finite(x) = isfinite(x) ? @sprintf("%.4f", mva * x) : "Inf"
         tag = h.structural ? "  (fixing a shorted protected line)" :
               h.both_sides  ? "  (both sides)" : ""
-        println("  ", @sprintf("%5d %8d %7d %10d %11s %11s %9d %s",
+        println(io, "  ", @sprintf("%5d %8d %7d %10d %11s %11s %9d %s",
             h.iteration, h.n_active, h.n_retained, h.n_internal,
             finite(h.worst_above), finite(h.worst_below), h.n_violating_hours,
             isempty(h.added_ids) ?
@@ -333,12 +378,12 @@ function report_scenario_generation(c, gen)
                                                    "-- stopped: unresolved short --") :
                 join(h.added_ids, ", ") * tag))
     end
-    println()
-    println("  worst above/below are in MW, on opposite sides of the flow window.")
-    println("  Two hours are added when BOTH sides are breached: the window is two")
-    println("  half-spaces, and a support point for one side constrains nothing")
-    println("  about the other. A row tagged \"fixing a shorted protected line\" instead")
-    println("  targets the hour that forces a merged-but-protected line apart.")
+    println(io)
+    println(io, "  worst above/below are in MW, on opposite sides of the flow window.")
+    println(io, "  Two hours are added when BOTH sides are breached: the window is two")
+    println(io, "  half-spaces, and a support point for one side constrains nothing")
+    println(io, "  about the other. A row tagged \"fixing a shorted protected line\" instead")
+    println(io, "  targets the hour that forces a merged-but-protected line apart.")
     return nothing
 end
 
@@ -364,28 +409,28 @@ network. "How many failed" says nothing about how to fix it; these four cuts do.
   LOAD LEVEL. Failures concentrated in high-load hours mean the reduction is fine
   off-peak and the binding cases are simply the stressed ones.
 """
-function report_dcopf_failures(c, val, art; top_n::Int=10)
-    section("5) Anatomy of the DC-OPF failures")
+function report_dcopf_failures(c, val, art; top_n::Int=10, io::IO=stdout)
+    section(io, "5) Anatomy of the DC-OPF failures")
     mva = c.base.baseMVA
     evaluated = val.original_optimal .& val.reduced_optimal
     failed = evaluated .& .!val.dispatch_feasible
     nfail = count(failed)
     if nfail == 0
-        println("  every evaluated hour's reduced dispatch was feasible on the full network")
+        println(io, "  every evaluated hour's reduced dispatch was feasible on the full network")
         return nothing
     end
     H = length(val.scenario_indices)
-    println("  infeasible hours = ", nfail, " / ", count(evaluated), " evaluated (of $H)")
+    println(io, "  infeasible hours = ", nfail, " / ", count(evaluated), " evaluated (of $H)")
 
     # (b) training-set membership
     fail_train = count(failed .& val.in_training)
     n_train = count(val.in_training)
-    println()
-    println("  a) MILP training coverage")
-    println("     failing hours that were IN the MILP training set  = ", fail_train,
+    println(io)
+    println(io, "  a) MILP training coverage")
+    println(io, "     failing hours that were IN the MILP training set  = ", fail_train,
             " / ", n_train, " training hours present")
-    println("     failing hours the MILP never saw                  = ", nfail - fail_train)
-    println("     => ", fail_train == 0 ?
+    println(io, "     failing hours the MILP never saw                  = ", nfail - fail_train)
+    println(io, "     => ", fail_train == 0 ?
             "failures are ALL out-of-sample: widen the scenario cover" :
             "hours the MILP was trained on also fail: the model itself is too loose, " *
             "more scenarios will not fix it")
@@ -393,32 +438,32 @@ function report_dcopf_failures(c, val, art; top_n::Int=10)
     # (a) internal vs external
     tot_int = sum(val.n_violating_internal[failed])
     tot_ext = sum(val.n_violating_external[failed])
-    println()
-    println("  b) which KIND of line is overloaded  (line-hour pairs over all failing hours)")
-    println("     INTERNAL (merged away)  = ", tot_int)
-    println("     EXTERNAL (survived)     = ", tot_ext)
-    println("     => ", tot_int > tot_ext ?
+    println(io)
+    println(io, "  b) which KIND of line is overloaded  (line-hour pairs over all failing hours)")
+    println(io, "     INTERNAL (merged away)  = ", tot_int)
+    println(io, "     EXTERNAL (survived)     = ", tot_ext)
+    println(io, "     => ", tot_int > tot_ext ?
             "mostly collapsed lines: the clustering is merging corridors that matter -- " *
             "protect them or lower the congestion threshold" :
             "mostly surviving lines: the reduced network models them but gets the flow " *
             "wrong -- an accuracy problem, not a protection problem")
     worst_h = argmax(ifelse.(failed, val.n_violating_lines, -1))
-    println("     worst single hour: ID ", val.scenario_ids[worst_h], " with ",
+    println(io, "     worst single hour: ID ", val.scenario_ids[worst_h], " with ",
             val.n_violating_lines[worst_h], " overloaded lines (",
             val.n_violating_internal[worst_h], " internal / ",
             val.n_violating_external[worst_h], " external), utilization ",
             sig(val.max_utilization[worst_h]))
 
     # (c) per-line frequency
-    println()
-    println("  c) most frequently overloaded lines")
+    println(io)
+    println(io, "  c) most frequently overloaded lines")
     offenders = sort(findall(>(0), val.line_violation_hours);
                      by=l -> -val.line_violation_hours[l])
     protected_set = Set(findall(art.r.protected))
-    println("     ", @sprintf("%-6s %-9s %-10s %8s %12s", "line", "kind", "protected",
+    println(io, "     ", @sprintf("%-6s %-9s %-10s %8s %12s", "line", "kind", "protected",
                               "hours", "worst MW"))
     for l in first(offenders, top_n)
-        println("     ", @sprintf("%-6s %-9s %-10s %8d %12s",
+        println(io, "     ", @sprintf("%-6s %-9s %-10s %8d %12s",
             "L$l",
             val.internal_line[l] ? "internal" : "external",
             l in protected_set ? "yes" : "no",
@@ -427,16 +472,16 @@ function report_dcopf_failures(c, val, art; top_n::Int=10)
     end
 
     # (d) load level
-    println()
-    println("  d) are failures concentrated at peak load?")
+    println(io)
+    println(io, "  d) are failures concentrated at peak load?")
     lf = val.total_load[failed]
     lp = val.total_load[evaluated .& val.dispatch_feasible]
-    println("     mean total load, failing hours = ",
+    println(io, "     mean total load, failing hours = ",
             sig(mva * (isempty(lf) ? NaN : mean(lf))), " MW")
-    println("     mean total load, passing hours = ",
+    println(io, "     mean total load, passing hours = ",
             sig(mva * (isempty(lp) ? NaN : mean(lp))), " MW")
     if !isempty(lf) && !isempty(lp)
-        println("     => ", mean(lf) > mean(lp) ?
+        println(io, "     => ", mean(lf) > mean(lp) ?
                 "failures skew toward HIGH load: the reduction holds off-peak and breaks under stress" :
                 "failures are NOT load-driven: the cause is structural, not stress")
     end
@@ -646,15 +691,15 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
 end
 
 "Side-by-side comparison of every relaxation setting in the sweep."
-function print_relaxation_table(rows)
-    section("RELAXATION COMPARISON")
+function print_relaxation_table(rows; io::IO=stdout)
+    section(io, "RELAXATION COMPARISON")
     header = @sprintf("%-22s %6s %5s %7s %8s %9s %10s %11s %11s %10s",
                       "setting", "scen", "iter", "buses", "reduct.", "int.lines",
                       "windowOK%", "worstUtil", "repair MW", "cost gap%")
-    println(header)
-    println(repeat("-", length(header)))
+    println(io, header)
+    println(io, repeat("-", length(header)))
     for row in rows
-        println(@sprintf("%-22s %6d %5s %7d %7.1f%% %9d %10.1f %11s %11s %10s",
+        println(io, @sprintf("%-22s %6d %5s %7d %7.1f%% %9d %10.1f %11s %11s %10s",
             relaxation_short(row.mode, row.delta),
             row.n_active,
             row.cg_iterations == 0 ? "-" :
@@ -665,20 +710,20 @@ function print_relaxation_table(rows)
             isfinite(row.worst_repair_mw) ? @sprintf("%.2f", row.worst_repair_mw) : "-",
             isfinite(row.mean_repair_cost_pct) ? @sprintf("%.4f", row.mean_repair_cost_pct) : "-"))
     end
-    println()
-    println("  scen       scenarios the MILP was finally solved on")
-    println("  iter       scenario-generation iterations; * = hit max without converging")
-    println("  buses      retained after reduction (lower = more reduction)")
-    println("  windowOK%  monthly hours whose reduced flows stay inside their own windows")
-    println("  worstUtil  worst |flow| / rating on the FULL network under the reduced")
-    println("             dispatch; 1.0 = exactly at rating, excess is the headroom needed")
-    println("  repair MW  worst-hour generation move needed to make that dispatch feasible")
-    println("  cost gap%  mean cost of the repaired dispatch vs the true full-network optimum")
+    println(io)
+    println(io, "  scen       scenarios the MILP was finally solved on")
+    println(io, "  iter       scenario-generation iterations; * = hit max without converging")
+    println(io, "  buses      retained after reduction (lower = more reduction)")
+    println(io, "  windowOK%  monthly hours whose reduced flows stay inside their own windows")
+    println(io, "  worstUtil  worst |flow| / rating on the FULL network under the reduced")
+    println(io, "             dispatch; 1.0 = exactly at rating, excess is the headroom needed")
+    println(io, "  repair MW  worst-hour generation move needed to make that dispatch feasible")
+    println(io, "  cost gap%  mean cost of the repaired dispatch vs the true full-network optimum")
     base = first(rows)
-    println()
+    println(io)
     for row in rows[2:end]
         Δbuses = base.n_retained - row.n_retained
-        println("  ", relaxation_short(row.mode, row.delta), ":  ",
+        println(io, "  ", relaxation_short(row.mode, row.delta), ":  ",
                 Δbuses > 0 ? "$Δbuses fewer buses" :
                 Δbuses == 0 ? "NO extra reduction" : "$(-Δbuses) MORE buses",
                 " than the unrelaxed baseline",
@@ -1003,16 +1048,16 @@ function check_original_model_constraints(TR, c, A, r, epsL;
                    binding_ok && window_ok && g_ok)
 end
 
-function report_original_model_constraints(chk)
-    section("4) Feasible under the ORIGINAL A-based model's constraints?")
-    println("  assignment (5)-(6)              = ", chk.assignment_ok)
-    println("  cluster connectivity            = ", chk.connectivity_ok)
-    println("  c-linking (14)-(16)             = ", chk.linking_ok,
+function report_original_model_constraints(chk; io::IO=stdout)
+    section(io, "4) Feasible under the ORIGINAL A-based model's constraints?")
+    println(io, "  assignment (5)-(6)              = ", chk.assignment_ok)
+    println(io, "  cluster connectivity            = ", chk.connectivity_ok)
+    println(io, "  c-linking (14)-(16)             = ", chk.linking_ok,
             chk.linking_ok ? "" : "  ($(chk.n_linking_mismatches) lines mismatched)")
-    println("  binding lines stay external (17)= ", chk.binding_ok)
-    println("  physical-limit window (22)      = ", chk.window_ok)
-    println("  internal-transfer bound (25)    = ", chk.g_ok)
-    println("  ALL CONSTRAINTS SATISFIED       = ", chk.all_ok)
+    println(io, "  binding lines stay external (17)= ", chk.binding_ok)
+    println(io, "  physical-limit window (22)      = ", chk.window_ok)
+    println(io, "  internal-transfer bound (25)    = ", chk.g_ok)
+    println(io, "  ALL CONSTRAINTS SATISFIED       = ", chk.all_ok)
     return nothing
 end
 

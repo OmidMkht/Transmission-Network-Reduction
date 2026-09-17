@@ -1,116 +1,100 @@
 # Transmission Network Reduction
 
-A Julia/JuMP implementation of an edge-based, assignment-matrix-free MILP for
-reducing a transmission network: it chooses which lines to collapse (merging
-the buses at their ends) so that the reduced network's DC power flow stays
-within an error window of the full network's, on every scenario supplied,
-while maximizing the number of internal (collapsed) lines.
+Julia/JuMP code for reducing a transmission network by merging buses, so that a
+DC-OPF on the reduced network gives dispatches that still work on the full one.
 
-The reason to reduce a network is computational: a reduced DC-OPF is cheaper
-to solve than the full one. `tnr_postprocessing.jl` benchmarks both under
-identical solver settings (Gurobi work units, not just wall clock) so that
-claim is measured, not assumed, on every run.
+Three approaches, each with its own runner:
+
+| Folder | Approach | Guarantee |
+|---|---|---|
+| `kkt/` | Bilevel model solved as one MILP through the lower level's KKT conditions | Some reduced optimum is feasible on the full network at every design demand |
+| `proxy/` | Proxy MILP: flows of the reduced network stay within a window of the full network's at fixed injections | None on the re-optimized dispatch; judged by how far off it is |
+| `greedy/` | Greedy merges ranked by predicted flow change, each checked by LPs | Same as `kkt/`, per accepted merge |
 
 ## Requirements
 
-- [Julia](https://julialang.org/) 1.11
-- [Gurobi](https://www.gurobi.com/) with a valid license (academic licenses
-  are free) and the `GUROBI_HOME` / `GRB_LICENSE_FILE` environment variables
-  set up per Gurobi's own instructions
-- The Julia packages pinned in `Project.toml` / `Manifest.toml`
-
-## Setup
+- [Julia](https://julialang.org/) 1.11+
+- [Gurobi](https://www.gurobi.com/) with a license (free for academics)
 
 ```
-git clone <this-repo>
-cd "Transmission Network Reduction"
 julia --project=. -e "using Pkg; Pkg.instantiate()"
 ```
 
-`Pkg.instantiate()` installs exactly the package versions recorded in
-`Manifest.toml`, so a fresh clone reproduces the environment this code was
-developed and tested against.
+## Running
 
-## Quick start
-
-Two small PGLib-OPF cases (`case14`, `case118`) are bundled so the pipeline
-runs with no data download:
+Each runner starts with a `SETTINGS` block. Edit it, or override any setting on
+the command line:
 
 ```
-julia --project=. --startup-file=no run_tnr.jl
+julia --project=. --startup-file=no kkt/run_kkt.jl
+julia --project=. --startup-file=no greedy/run_greedy.jl case=case300 hop_cap=5
+julia --project=. --startup-file=no proxy/run_proxy.jl case=case14 demands=scaled
 ```
 
-This builds `case studies/pglib_opf_case118_ieee.m` as a one-scenario case,
-solves the reduction MILP, validates the result against a DC-OPF, benchmarks
-full-vs-reduced solve time, and writes everything to `outputs/case118_edge/`.
+Values can be numbers, `true`/`false`, `nothing`, words (`case300`) or lists
+(`'hop_cap=[5,10,nothing]'`, quoted in the shell).
 
-`run_tnr.jl` is the only runner. Two switches at the top of it pick what runs:
+### Settings shared by all three
 
-```julia
-RUN = (
-    scenarios = :single,   # :single = one operating point | :multi = hourly matrices
-    kron      = false,     # true = collapse degree-2 chains before the MILP
-    ...
-)
-```
+| Setting | Values |
+|---|---|
+| `case` | `case14`, `case118`, `case300`, `case500`, `case2000`, `case6515`, `ACTIVSg200`, `ACTIVSg2000` |
+| `demands` | `:single` base demand; `:scaled` `n_demands` load levels over `scale_range`, midpoints held out; `:hourly` ACTIVSg hours |
+| `budget` | max merged lines, `nothing` = no limit |
+| `hop_cap` | max chain of merged lines inside a cluster |
+| `size_cap` | max buses per cluster |
+| `time_limit` | seconds |
+| `output_dir` | `nothing` = `outputs/<approach>/<case>/<tag>/` |
 
-Everything below that block -- the model, the tolerances, the sweep, the
-validation -- is shared by all four combinations, so a change is tested the
-same way whichever one you run. The console prints a short digest; the full
-report for each setting lands in `<output_dir>/<setting>/report.txt`.
+### Approach-specific
 
-`scenarios = :multi` runs a month of hourly scenarios instead of one operating
-point. It needs `tnr_multiscenario.jl` and the ACTIVSg scenario matrices,
-neither of which is published, so a fresh clone runs `:single`; asking for
-`:multi` stops with a message naming what is missing.
+- **kkt:** `cost_cap` (% over the full-network optimum), `objective`
+  (`:lines` or `:clusters`), `start_from` (an `internal.csv` from another run,
+  e.g. the greedy, kept merged). A cap given as a list runs one solve per entry,
+  each keeping the previous merges: `hop_cap=[5,10,nothing]` is hop 5, hop 10,
+  then free.
+- **greedy:** `cost_cap`, `flow_tol` (allowed overload, fraction of rating),
+  `cost_tol`, `kkt_check` (final joint check with rollback), `ordering`,
+  `norm`, `alpha`, `radial_first`.
+- **proxy:** `eps` (flow window, fraction of rating), `near_limit` (lines
+  loaded above this stay unmerged), `relaxation`, `lmp_separation`, `kron`,
+  `derate`, `plots`, `export_matpower`.
 
-## Kron preprocessing
+### Outputs
 
-`kron_reduction/` collapses every chain of degree-2, generator-free,
-uncongested buses into one equivalent series line before the MILP runs, then
-unfolds the result back onto the full bus set so every validation still runs
-against the true original network. Set `kron = true` in `run_tnr.jl` to use
-it; it composes with either scenario mode.
+Every run writes `settings.txt`, `summary.csv`, the reduction (`internal.csv`,
+`assignment.csv`, `bus_mapping.csv`) and its checks. `kkt/` and `greedy/` check
+the design demands (and whether every reduced optimum is safe) and the held-out
+demands. `proxy/` replays the reduced dispatch on the full network and reports
+overloads in MW and % of rating, cost and LMP errors, per setting in
+`report.txt`.
 
-See [`kron_reduction/README.md`](kron_reduction/README.md) for the eligibility
-rules and the measured trade-off, and `reference/kron_preprocessing.pdf` for
-the formulation.
+## Scope
 
-## Reduced network examples
+All checks use a lossless DC model (taps and phase shifts ignored) and hold
+only for the demands checked. A reduced OPF with several optimal dispatches may
+return one that was not checked; `kkt/` and `greedy/` report how many design
+demands have every optimum safe.
 
-[`reduced_cases/`](reduced_cases/) has three networks already reduced by this
-repo, exported as standalone MATPOWER `.m` files that load directly in
-MATPOWER or PowerModels -- no dependency on this repo or on the (much larger)
-original case files. See its README for exactly what settings produced each
-one and a caveat on one of them.
+## Other folders
+
+| Folder | Contents |
+|---|---|
+| `common/` | Case table and demands, caps, audit, pre/postprocessing, plots, MATPOWER export |
+| `analysis/` | Line-by-line infeasibility of a proxy result, network plot |
+| `hpc/` | Running on the VACC cluster, see `hpc/VACC.md` |
+| `reduced_cases/` | Reduced networks as standalone MATPOWER files |
+| `reference/` | Papers describing the formulations |
+| `archive/` | Earlier experiments, kept for reference (not maintained) |
 
 ## Case data
 
-`case14` and `case118` ship in `case studies/` for the quick start above.
-Larger PGLib-OPF cases (`case300`, `case500`, `case2000`, `case6515`, ...) can
-be added the same way -- download the `.m` file from
-[power-grid-lib/pglib-opf](https://github.com/power-grid-lib/pglib-opf) and
-place it under `case studies/<filename>.m`.
-
-## File overview
-
-| File | Role |
-|---|---|
-| `tnr_preprocessing.jl` | Case structs, case building, DC-OPF, redispatch, windows |
-| `tnr_model.jl` | The reduction MILP itself (edge-based model) |
-| `tnr_postprocessing.jl` | Feasibility checks, DC-OPF validation, solve-time benchmark |
-| `tnr_reporting.jl` | Console reports, plots, CSV output, the sweep driver |
-| `transmission_plots.jl` | Before/after network figure |
-| `run_tnr.jl` | The runner: single/multi scenario, with/without Kron |
-| `matpower_export.jl` | Write a reduced network back out as a MATPOWER `.m` file |
-| `kron_reduction/` | Chain elimination before the MILP |
-| `reduced_cases/` | Reduced networks published as standalone MATPOWER `.m` files |
-| `reference/` | Compiled papers describing the formulations this code implements |
-
-`outputs/` is where results are written -- it's gitignored and reproducible
-from the case data and the config block in `run_tnr.jl`.
+`case14` and `case118` are included. Other PGLib-OPF cases go in
+`case studies/` (from [pglib-opf](https://github.com/power-grid-lib/pglib-opf)).
+ACTIVSg hourly scenarios need the ACTIVSg data and
+`common/make_hourly_scenarios.jl`.
 
 ## License
 
-MIT -- see `LICENSE`. This covers the code only; third-party case data under
-`case studies/` and the paper under `reference/` carry their own terms.
+MIT, see `LICENSE`. Covers the code only; case data and papers carry their own
+terms.

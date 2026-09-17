@@ -6,7 +6,7 @@
 # MultiScenarioTxReductionCase and reuses incidence_matrix, extract_reduction,
 # etc. directly. Nothing in the parent directory is modified by this file.
 #
-# See kron_reduction/../.claude-adjacent design discussion for the two rules
+# See proxy/kron/README.md for the two rules
 # this all serves: an eliminated bus rejoins whichever cluster its equivalent
 # line's two endpoints end up in (if they merge), or is reinserted with its
 # true original topology and injection (if the equivalent line stays

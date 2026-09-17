@@ -1,9 +1,9 @@
 # --------------------------------------------------------------------------- #
-# KRON-AWARE REPORTING -- mirrors tnr_reporting.jl's sweep_multiscenario /
+# KRON-AWARE REPORTING -- mirrors proxy/reporting.jl's sweep_multiscenario /
 # write_multiscenario_outputs closely enough that TxReport.print_relaxation_table,
 # TxReport.write_relaxation_table, TxReport.report_reduction,
 # TxReport.report_dcopf_failures and TxReport.plot_network all work UNMODIFIED
-# against this module's output. tnr_reporting.jl itself is never touched --
+# against this module's output. proxy/reporting.jl itself is never touched --
 # sweep_multiscenario has no seam to redirect its one hardcoded solve call at a
 # smaller case, so this is a small, deliberate duplication of orchestration
 # only; every validation/benchmark CALL inside it is the existing function,
@@ -60,6 +60,9 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
+                internal_rating_bound=get(cfg, :internal_rating_bound, false),
+                switch_form=get(cfg, :switch_form, :hull),
+                force_internal=get(cfg, :force_internal, Int[]),
                 merge_exact_blocks=get(cfg, :merge_exact_blocks, false),
                 merge_exact_mode=get(cfg, :merge_exact_mode, :fix),
                 merge_leaf_blocks=get(cfg, :merge_leaf_blocks, true),
@@ -67,9 +70,9 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
                 lmp_threshold=get(cfg, :lmp_threshold, 5.0),
                 lmp_relax_pmin=get(cfg, :lmp_relax_pmin, true),
                 lmp_opf_time_limit=get(cfg, :opf_time_limit, nothing),
-                int_feas_tol=get(cfg, :int_feas_tol, 1e-7),
-                feasibility_tol=get(cfg, :feasibility_tol, 1e-7),
-                optimality_tol=get(cfg, :optimality_tol, 1e-7),
+                int_feas_tol=get(cfg, :int_feas_tol, nothing),
+                feasibility_tol=get(cfg, :feasibility_tol, nothing),
+                optimality_tol=get(cfg, :optimality_tol, nothing),
                 log_file=log_file)
             r_boundary = gen.r
             active = gen.active
@@ -85,6 +88,9 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
+                internal_rating_bound=get(cfg, :internal_rating_bound, false),
+                switch_form=get(cfg, :switch_form, :hull),
+                force_internal=get(cfg, :force_internal, Int[]),
                 merge_exact_blocks=get(cfg, :merge_exact_blocks, false),
                 merge_exact_mode=get(cfg, :merge_exact_mode, :fix),
                 merge_leaf_blocks=get(cfg, :merge_leaf_blocks, true),
@@ -92,9 +98,9 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
                 lmp_threshold=get(cfg, :lmp_threshold, 5.0),
                 lmp_relax_pmin=get(cfg, :lmp_relax_pmin, true),
                 lmp_opf_time_limit=get(cfg, :opf_time_limit, nothing),
-                int_feas_tol=get(cfg, :int_feas_tol, 1e-7),
-                feasibility_tol=get(cfg, :feasibility_tol, 1e-7),
-                optimality_tol=get(cfg, :optimality_tol, 1e-7),
+                int_feas_tol=get(cfg, :int_feas_tol, nothing),
+                feasibility_tol=get(cfg, :feasibility_tol, nothing),
+                optimality_tol=get(cfg, :optimality_tol, nothing),
                 log_file=log_file)
             active = selected
         end
@@ -108,13 +114,16 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
                            red_b.rep_of[kron_map.boundary_of[ch.y]]
                            for ch in kron_map.chains]
         # collapse_external_chains (default true): chain-interior buses never
-        # resurface in the REPORTED network, even when their equivalent line
+        # resurface in the optional DISPLAY network, even when their equivalent line
         # stays external -- see kron_unfold.jl's kron_display_assignment.
         # bench/val/timing below always use the fully-reinserted A_full
-        # regardless of this flag; only r_display/the plot/the CSVs change.
+        # regardless of this flag. Primary reports and exports must use that
+        # same assignment; the compact display is a separate visual artifact.
         A_display = get(cfg.kron_reduction, :collapse_external_chains, true) ?
             TR.kron_display_assignment(c_full.base, kron_map, r_boundary.A) : A_full
         r_display = TR.make_r_display(c_full, r_boundary, kron_map, A_display;
+            near_limit_threshold=cfg.near_limit_threshold, protection_indices=month_indices)
+        r_full = TR.make_r_display(c_full, r_boundary, kron_map, A_full;
             near_limit_threshold=cfg.near_limit_threshold, protection_indices=month_indices)
 
         dcopf_indices = dc.scope === :month ? month_indices :
@@ -154,9 +163,9 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
         push!(rows, (
             mode=mode, delta=delta,
             label=TxReport.relaxation_label(mode, delta),
-            n_retained=r_display.n_retained,
-            reduction_pct=100 * (c_full.base.N - r_display.n_retained) / c_full.base.N,
-            n_internal=r_display.n_internal_lines,
+            n_retained=r_full.n_retained,
+            reduction_pct=100 * (c_full.base.N - r_full.n_retained) / c_full.base.N,
+            n_internal=r_full.n_internal_lines,
             solve_time=r_boundary.solve_time,
             status=string(r_boundary.status),
             genuine=chk.genuine,
@@ -204,8 +213,10 @@ function sweep_kron_multiscenario(TR, c_full, c_boundary, epsL_full, epsL_bounda
             n_kron_eliminated=kron_map.full_N - kron_map.boundary_N,
             boundary_n_bus=kron_map.boundary_N,
             boundary_n_line=c_boundary.base.Ln,
+            display_n_retained=r_display.n_retained,
         ))
-        push!(artifacts, (r=r_display, r_boundary=r_boundary, A=A_display, A_full=A_full,
+        push!(artifacts, (r=r_full, r_boundary=r_boundary, A=A_full, A_full=A_full,
+                          r_display=r_display, A_display=A_display,
                           chain_internal=chain_internal,
                           chk=chk, bench=bench, val=val, gen=gen,
                           timing=timing, active=active, kron_map=kron_map,
@@ -264,7 +275,7 @@ end
 
 # --------------------------------------------------------------------------- #
 # Per-setting file output. Mirrors write_multiscenario_outputs, reading
-# internal/protected/rep_of from art.r (= r_display, full-network-correct).
+# internal/protected/rep_of from art.r (= r_full, the validated assignment).
 # selected_internal_transfer_mw.csv is DROPPED (r_boundary.gint has no
 # full-network analogue for former chain-interior lines -- see kron_unfold.jl)
 # and replaced with two Kron-specific files.
@@ -278,6 +289,7 @@ function write_kron_multiscenario_outputs(dir, c, art, kron_map,
     first_hour = DateTime(get(cfg, :year, 2017), 1, 1)
 
     writedlm(joinpath(dir, "assignment_matrix.csv"), A, ',')
+    writedlm(joinpath(dir, "display_assignment_matrix.csv"), art.A_display, ',')
     writedlm(joinpath(dir, "monthly_reduced_flow_mw.csv"), mva .* bench.screen.flow, ',')
 
     timing = get(art, :timing, nothing)
@@ -470,9 +482,16 @@ function write_kron_multiscenario_outputs(dir, c, art, kron_map,
         println(io, "Congestion definition: abs(flow)/rating >= $(cfg.near_limit_threshold)")
         println(io, "Kron reduction: $(kron_map.full_N) -> $(kron_map.boundary_N) buses ",
                 "($(length(kron_map.chains)) chains)")
+        println(io, "Validated/exported assignment: $(r.n_retained) buses; ",
+                "compact display: $(art.r_display.n_retained) buses.")
+        println(io, "assignment_matrix.csv is the assignment used for validation and timing.")
+        println(io, "display_assignment_matrix.csv is visual only; it is not a validated contraction.")
         println(io, "MILP scenario IDs: $(join(selection.scenario_ids, ", "))")
         println(io, "Those cover all $(length(selection.congested_lines)) congested lines.")
-        println(io, "Every loaded scenario was used for the post-solve benchmark.")
+        println(io, "Fixed-injection benchmark scenario IDs: ", join(c.scenario_ids[month_indices], ", "))
+        println(io, "DC-OPF replay scenario IDs: ",
+                isnothing(val) ? "not run" : join(val.scenario_ids, ", "))
+        println(io, "Replay checks the returned dispatch at these demands; alternate optima and other demands are not certified.")
         println(io)
         println(io, "line_status.csv / bus_mapping.csv / *.csv are all at FULL-network")
         println(io, "granularity, unfolded from the boundary (Kron-reduced) solve -- see")

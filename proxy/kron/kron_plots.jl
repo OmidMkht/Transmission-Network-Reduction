@@ -1,7 +1,7 @@
 # --------------------------------------------------------------------------- #
 # Three-panel Kron figure. Loaded lazily by kron_reporting.jl's
-# ensure_kron_plots (mirrors ../transmission_plots.jl's own laziness -- never
-# pay for CairoMakie on a plots-off run). Reuses transmission_plots.jl's
+# ensure_kron_plots (mirrors common/plots.jl's own laziness -- never
+# pay for CairoMakie on a plots-off run). Reuses common/plots.jl's
 # low-level helpers (network_layout, _reduction_maps, _cluster_colors,
 # _segments, _arc, _fan, _halo_text!, _midpoints, colour constants) via
 # TxReport.* qualification rather than redefining them -- nothing in the
@@ -23,7 +23,7 @@
 #          collapsed chain.
 #   RIGHT  the final reduced network -- retained super-nodes and external
 #          lines only, from the unfolded full-size assignment matrix. Same
-#          rendering as transmission_plots.jl's plot_reduction right panel.
+#          rendering as common/plots.jl's plot_reduction right panel.
 # --------------------------------------------------------------------------- #
 
 using CairoMakie
@@ -34,7 +34,7 @@ using GeometryBasics: Point2f
     plot_kron_reduction(c_full, kron_map, c_boundary, A_full; path=nothing, kwargs...)
 
 `c_full`/`c_boundary` are `MultiScenarioTxReductionCase`s, `A_full` the
-unfolded full-size assignment matrix (`kron_reduction/kron_unfold.jl`'s
+unfolded full-size assignment matrix (`kron_unfold.jl`'s
 `unfold_kron_assignment`). Keyword arguments mirror `plot_reduction`'s:
 `path`, `title`, `algorithm`/`seed`/`pos` (layout), `resolution`, `node_size`,
 `label_retained`, `congested_lines`, `congested_line_labels`,
@@ -54,6 +54,7 @@ function plot_kron_reduction(c_full, kron_map, c_boundary, A_full;
                              label_congested::Bool=true,
                              binding_lines=nothing,
                              max_congested_labels::Int=30,
+                             merge_parallel::Bool=true,
                              io::IO=stdout)
     c = c_full.base
     Aint = round.(Int, A_full)
@@ -270,35 +271,56 @@ function plot_kron_reduction(c_full, kron_map, c_boundary, A_full;
         push!(get!(pair_lines, minmax(rep[c.Efrom[l]], rep[c.Eto[l]]), Int[]), l)
     end
 
+    # One arc per CLUSTER PAIR, not one per surviving line -- at high reduction
+    # the fan turns this panel into hatching. The arc takes the worst class among
+    # its members, thickens with the count, and keeps its xN label.
     plain_arcs = Vector{Vector{Point2f}}()
+    plain_w = Float64[]
     protected_arcs = Vector{Vector{Point2f}}()
+    protected_w = Float64[]
     congested_arcs = Vector{Vector{Point2f}}()
     bundle_labels = Point2f[]
     bundle_text = String[]
     for (a, b) in sort(collect(keys(pair_lines)))
         ls = sort(pair_lines[(a, b)])
-        curvatures = TxReport._fan(length(ls))
-        for (t, l) in enumerate(ls)
-            arc = TxReport._arc(pos[a], pos[b], curvatures[t])
-            if l in congested_set
+        n = length(ls)
+        if merge_parallel
+            arc = TxReport._arc(pos[a], pos[b], 0.0)
+            # No xN label: one arc per pair already says "these are one
+            # corridor", and a count on every arc is the clutter the merge
+            # was for. Thickness carries the count instead.
+            w = min(1.0 + 0.45 * sqrt(n), 3.2)
+            if any(l -> l in congested_set, ls)
                 push!(congested_arcs, arc)
-            elseif l in binding_set
-                push!(protected_arcs, arc)
+            elseif any(l -> l in binding_set, ls)
+                push!(protected_arcs, arc); push!(protected_w, max(w, 2.4))
             else
-                push!(plain_arcs, arc)
+                push!(plain_arcs, arc); push!(plain_w, w)
+            end
+        else
+            curvatures = TxReport._fan(n)
+            for (t, l) in enumerate(ls)
+                arc = TxReport._arc(pos[a], pos[b], curvatures[t])
+                if l in congested_set
+                    push!(congested_arcs, arc)
+                elseif l in binding_set
+                    push!(protected_arcs, arc); push!(protected_w, 3.0)
+                else
+                    push!(plain_arcs, arc); push!(plain_w, 1.8)
+                end
+            end
+            if n > 1
+                outer = TxReport._arc(pos[a], pos[b], maximum(curvatures) + 0.12)
+                push!(bundle_labels, outer[cld(length(outer), 4)])
+                push!(bundle_text, "x$n")
             end
         end
-        if length(ls) > 1
-            outer = TxReport._arc(pos[a], pos[b], maximum(curvatures) + 0.12)
-            push!(bundle_labels, outer[cld(length(outer), 4)])
-            push!(bundle_text, "×$(length(ls))")
-        end
     end
-    for arc in plain_arcs
-        lines!(axR, arc; color=TxReport.INK_SECOND, linewidth=1.8)
+    for (arc, w) in zip(plain_arcs, plain_w)
+        lines!(axR, arc; color=TxReport.INK_SECOND, linewidth=w)
     end
-    for arc in protected_arcs
-        lines!(axR, arc; color=TxReport.INK_PRIMARY, linewidth=3.0)
+    for (arc, w) in zip(protected_arcs, protected_w)
+        lines!(axR, arc; color=TxReport.INK_PRIMARY, linewidth=w)
     end
     for arc in congested_arcs
         lines!(axR, arc; color=(:white, 0.95), linewidth=7.5)
@@ -370,7 +392,17 @@ function plot_kron_reduction(c_full, kron_map, c_boundary, A_full;
     if any(length(v) > 1 for v in values(pair_lines))
         push!(legend_elements,
               MarkerElement(marker=:hline, color=TxReport.INK_SECOND, markersize=15))
-        push!(legend_labels, "×n — parallel lines fanned out (right)")
+        push!(legend_labels, merge_parallel ?
+              "thicker arc (right) — more parallel lines merged into one corridor" :
+              "×n (right) — parallel lines fanned out")
+    end
+    # The middle panel's ×n counts BUSES a chain collapsed, not parallel lines.
+    # With the right panel's own ×n gone it is the only one left on the figure,
+    # so it needs saying or it reads as the entry above.
+    if !isempty(eq_text)
+        push!(legend_elements,
+              MarkerElement(marker=:hline, color=TxReport.INK_SECOND, markersize=15))
+        push!(legend_labels, "×n (middle) — buses collapsed into that equivalent line")
     end
     Legend(fig[2, 1:3], legend_elements, legend_labels;
            orientation=:horizontal, nbanks=3, framevisible=true,

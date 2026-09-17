@@ -157,10 +157,10 @@ function report_reduction(c, r, A; io::IO=stdout)
                 r.merge_exact_mode === :fix ? "FIXED internal" : "warm-started",
                 "   (", r.n_merge_bridges, " bridges, ",
                 r.n_merge_leaf_blocks, " leaf blocks)")
-        println(io, "                        provably zero flow error elsewhere, so this",
+        println(io, "                        fixed-injection flow preservation; ",
                 r.merge_exact_mode === :fix ?
-                " cannot change the optimum -- only the search" :
-                " is only a hint; the solver may still choose otherwise")
+                "fixed contractions restrict the search" :
+                "warm starts leave the search unrestricted")
     end
     if get(r, :n_lmp_rows, 0) > 0
         println(io, "  LMP separation      = ", r.n_lmp_rows, " shortest-path rows at ",
@@ -226,6 +226,8 @@ end
 
 function report_dcopf(c, val; io::IO=stdout)
     section(io, "4) Full-vs-reduced DC-OPF validation")
+    println(io, "  scope: returned dispatches at listed demands; alternate optima and unseen demands are not certified")
+    println(io, "  scenario IDs                       = ", join(val.scenario_ids, ", "))
     mva = c.base.baseMVA
     H = length(val.scenario_indices)
     println(io, "  Pmin relaxed to zero               = ", val.relax_pmin)
@@ -284,7 +286,7 @@ function report_dcopf(c, val; io::IO=stdout)
         println(io, "      hours repairable                             = ",
                 val.n_repair_feasible, " / ", H,
                 val.n_repair_feasible == H ? "" :
-                "   <-- an unrepairable hour means the FULL network cannot serve it")
+                "   <-- a failed repair solve does not by itself prove full-network infeasibility")
         println(io, "      worst / mean redispatch                      = ",
                 sig(mva * val.worst_repair_redispatch), " / ",
                 sig(mva * val.mean_repair_redispatch), " MW")
@@ -304,7 +306,32 @@ end
 # residual check, the solve-time benchmark, the graded severity, the overload
 # anatomy, the sweep table -- is still produced in full and goes to report.txt.
 # --------------------------------------------------------------------------- #
-function report_digest(c, art, month_indices; io::IO=stdout)
+"Persist the same certificate outcome and scope in console and saved reports."
+function report_derating_scope(c, derate; io::IO=stdout)
+    isnothing(derate) && return nothing
+    section(io, "Derating outcome and certification scope")
+    println(io, "  empirical outcome = ", derate.emp.reason)
+    println(io, "  empirical scenario IDs = ", join(get(derate, :empirical_ids, []), ";"))
+    println(io, "  requested certificate scenario IDs = ", join(get(derate, :certificate_ids, []), ";"))
+    cert = derate.cert
+    println(io, "  certification = ", isnothing(cert) ? "not run" :
+        cert.certified ? "passed within stated scope and tolerances" : "not established: $(cert.reason)")
+    if !isnothing(cert)
+        println(io, "  dispatch scope = ", get(cert, :dispatch_scope, "unrecorded"))
+        println(io, "  cost band percent above reduced optimum = ", get(cert, :cost_cap_pct, "unrecorded"))
+        println(io, "  effective cost caps in supplied-scenario order = ", get(cert, :cost_caps, "unrecorded"))
+        println(io, "  monitored original lines = ", get(cert, :n_monitored_lines, "unrecorded"))
+        println(io, "  absolute flow tolerance (pu) = ", get(cert, :tolerance, "unrecorded"))
+        println(io, "  generation minimum relaxed = ", get(cert, :relax_pmin, "unrecorded"))
+        println(io, "  This does not cover other demands or prove that unsuccessful derating is impossible.")
+    end
+    println(io, "  derated original line IDs = ", join(derate.derated, ";"))
+    return nothing
+end
+
+"Console summary, with optional empirical validation under derated ratings."
+function report_digest(c, art, month_indices; io::IO=stdout,
+                       derate=nothing, val_derated=nothing)
     println(io)
     println(io, repeat("=", 78))
     println(io, "RESULTS:  ", relaxation_pretty(art.mode, art.delta))
@@ -320,21 +347,56 @@ function report_digest(c, art, month_indices; io::IO=stdout)
     println(io, "  worst external flow error          = ",
             sig(bench.max_external_normalized_error), "  (normalized by rating)")
 
+    if !isnothing(derate)
+        section(io, "Derating (post-reduction; the clustering is unchanged)")
+        println(io, "  hours checked       = ", derate.n_emp, " empirical / ",
+                derate.n_cert, " requested for certification",
+                "   (one rating per line, set by the binding hour)")
+        println(io, "  empirical descent   = ", derate.emp.reason)
+        println(io, "  certified           = ", isnothing(derate.cert) ? "not run" :
+                derate.cert.certified ?
+                    "YES -- within the reported cost band and checked scenarios" :
+                    "NO (" * string(derate.cert.reason) * ")")
+        println(io, "  lines derated       = ", length(derate.derated), " / ", c.base.Ln,
+                isempty(derate.derated) ? "" :
+                "   worst " * string(round(derate.worst_pct, digits=1)) * "% off its rating")
+        if !isnothing(derate.cert)
+            println(io, "  certificate scope   = ", get(derate.cert, :n_scenarios, derate.n_cert),
+                    " checked demands; cost cap (%): ", get(derate.cert, :cost_cap_pct, "unrecorded"),
+                    "; Pmin relaxed: ", get(derate.cert, :relax_pmin, "unrecorded"))
+            println(io, "  certificate tolerance (pu) = ", get(derate.cert, :tolerance, "unrecorded"))
+            derate.cert.certified || println(io,
+                "  failure means this search did not certify the ratings; other deratings may still work")
+        end
+    end
+
     val = art.val
     isnothing(val) && return nothing
     H = length(val.scenario_indices)
-    section(io, "4a) Full-vs-reduced DC-OPF: strict pass/fail")
-    println(io, "  reduced dispatch feasible on original network = ",
-            val.n_dispatch_feasible, " / ", H,
-            "   (tolerance ", val.relative_tolerance, " of rating)")
-    println(io, "  objective gap <= ", val.objective_tolerance_pct, "%                      = ",
-            val.n_objective_within_tolerance, " / ", H)
-    println(io, "  max LMP difference <= ", val.lmp_tolerance, " \$/MWh          = ",
-            val.n_lmp_within_tolerance, " / ", H)
-    println(io, "  worst absolute objective change              = ",
-            pct(val.worst_abs_objective_change_pct))
-    println(io, "  worst LMP difference                         = ",
-            sig(val.worst_lmp_error), " \$/MWh")
+
+    "One 4a block for a given validation result."
+    function pass_fail(v, title)
+        section(io, title)
+        println(io, "  scope: one returned dispatch per checked demand; this is empirical validation")
+        println(io, "  reduced dispatch feasible on original network = ",
+                v.n_dispatch_feasible, " / ", H,
+                "   (tolerance ", v.relative_tolerance, " of rating)")
+        println(io, "  objective gap <= ", v.objective_tolerance_pct, "%                      = ",
+                v.n_objective_within_tolerance, " / ", H)
+        println(io, "  max LMP difference <= ", v.lmp_tolerance, " \$/MWh          = ",
+                v.n_lmp_within_tolerance, " / ", H)
+        println(io, "  worst absolute objective change              = ",
+                pct(v.worst_abs_objective_change_pct))
+        println(io, "  worst LMP difference                         = ",
+                sig(v.worst_lmp_error), " \$/MWh")
+    end
+
+    if isnothing(val_derated)
+        pass_fail(val, "4a) Full-vs-reduced DC-OPF: strict pass/fail")
+    else
+        pass_fail(val, "4a) Full-vs-reduced DC-OPF: strict pass/fail  --  WITHOUT derating")
+        pass_fail(val_derated, "4a) Full-vs-reduced DC-OPF: strict pass/fail  --  WITH derating")
+    end
     return nothing
 end
 
@@ -545,6 +607,9 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
+                internal_rating_bound=get(cfg, :internal_rating_bound, false),
+                switch_form=get(cfg, :switch_form, :hull),
+                force_internal=get(cfg, :force_internal, Int[]),
                 merge_exact_blocks=get(cfg, :merge_exact_blocks, false),
                 merge_exact_mode=get(cfg, :merge_exact_mode, :fix),
                 merge_leaf_blocks=get(cfg, :merge_leaf_blocks, true),
@@ -552,9 +617,12 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 lmp_threshold=get(cfg, :lmp_threshold, 5.0),
                 lmp_relax_pmin=get(cfg, :lmp_relax_pmin, true),
                 lmp_opf_time_limit=get(cfg, :opf_time_limit, nothing),
-                int_feas_tol=get(cfg, :int_feas_tol, 1e-7),
-                feasibility_tol=get(cfg, :feasibility_tol, 1e-7),
-                optimality_tol=get(cfg, :optimality_tol, 1e-7),
+                int_feas_tol=get(cfg, :int_feas_tol, nothing),
+                feasibility_tol=get(cfg, :feasibility_tol, nothing),
+                optimality_tol=get(cfg, :optimality_tol, nothing),
+                line_budget=get(cfg, :line_budget, nothing),
+                hop_cap=get(cfg, :hop_cap, nothing),
+                size_cap=get(cfg, :size_cap, nothing),
                 log_file=log_file)
             r = gen.r
             active = gen.active
@@ -570,6 +638,9 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
+                internal_rating_bound=get(cfg, :internal_rating_bound, false),
+                switch_form=get(cfg, :switch_form, :hull),
+                force_internal=get(cfg, :force_internal, Int[]),
                 merge_exact_blocks=get(cfg, :merge_exact_blocks, false),
                 merge_exact_mode=get(cfg, :merge_exact_mode, :fix),
                 merge_leaf_blocks=get(cfg, :merge_leaf_blocks, true),
@@ -577,9 +648,12 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 lmp_threshold=get(cfg, :lmp_threshold, 5.0),
                 lmp_relax_pmin=get(cfg, :lmp_relax_pmin, true),
                 lmp_opf_time_limit=get(cfg, :opf_time_limit, nothing),
-                int_feas_tol=get(cfg, :int_feas_tol, 1e-7),
-                feasibility_tol=get(cfg, :feasibility_tol, 1e-7),
-                optimality_tol=get(cfg, :optimality_tol, 1e-7),
+                int_feas_tol=get(cfg, :int_feas_tol, nothing),
+                feasibility_tol=get(cfg, :feasibility_tol, nothing),
+                optimality_tol=get(cfg, :optimality_tol, nothing),
+                line_budget=get(cfg, :line_budget, nothing),
+                hop_cap=get(cfg, :hop_cap, nothing),
+                size_cap=get(cfg, :size_cap, nothing),
                 log_file=log_file)
             active = selected
         end
@@ -956,7 +1030,10 @@ function write_multiscenario_outputs(dir, c, art, selection, selected, month_ind
         println(io, "Line-limit scale: $(get(cfg, :line_limit_scale, 1.0))")
         println(io, "MILP scenario IDs: $(join(selection.scenario_ids, ", "))")
         println(io, "Those cover all $(length(selection.congested_lines)) congested lines.")
-        println(io, "Every loaded scenario was used for the post-solve benchmark.")
+        println(io, "Fixed-injection benchmark scenario IDs: ", join(c.scenario_ids[month_indices], ", "))
+        println(io, "DC-OPF replay scenario IDs: ",
+                isnothing(val) ? "not run" : join(val.scenario_ids, ", "))
+        println(io, "Replay checks returned dispatches only; alternate optima and other demands are not certified.")
         println(io)
         println(io, "A congestion relaxation loosens the flow pin on congested lines to buy")
         println(io, "reduction. :conservative opens the window only toward MORE congestion, so")
@@ -992,7 +1069,7 @@ function check_original_model_constraints(TR, c, A, r, epsL;
                                           near_limit_threshold=nothing,
                                           congestion_relaxation=0.0,
                                           congestion_relaxation_mode::Symbol=:none,
-                                          tol::Float64=1e-6)
+                                          tol::Real=1e-6)
     rep = TR.extract_reduction(A).rep_of
     cl_from_A = [rep[c.Efrom[l]] == rep[c.Eto[l]] ? 1 : 0 for l in 1:c.Ln]
 

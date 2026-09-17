@@ -1,9 +1,9 @@
 # --------------------------------------------------------------------------- #
-# Before/after graph plots for the reduction. Loaded lazily by tnr_reporting.jl
+# Before/after graph plots for the reduction. Loaded lazily by proxy/reporting.jl
 # (CairoMakie is the slowest include in the project, so a run with plots off
 # never pays for it) -- or standalone:
 #
-#   include("transmission_plots.jl")
+#   include("common/plots.jl")
 #   plot_reduction(c, A; path="outputs/case118.png")
 #
 # `A` is the assignment matrix (A[i,j]=1 => bus j is in cluster i); the maps
@@ -149,10 +149,13 @@ Unmerged single buses stay neutral grey.
 
 **Right (reduced).** Retained buses only, marker area growing with cluster size
 (bounded, so one huge cluster cannot swallow the panel), and external lines only.
-Parallel external lines joining the same pair of super-nodes are fanned into
-separate arcs and the bundle is labelled with its line count, so the surviving
-line count is visible rather than merely asserted in the panel title. Same
-colours, same coordinates as the left panel.
+Parallel external lines joining the same pair of super-nodes are drawn as ONE
+arc -- at high reduction a pair can carry a dozen parallels and fanning them
+turns the panel into hatching. The merged arc takes the worst class among its
+members (congested beats protected beats plain) and thickens with the count, so
+the corridor's weight is still legible without a label on every line. Pass
+`merge_parallel=false` for one arc per line, fanned and counted. Same colours,
+same coordinates as the left panel.
 
 Protected lines -- those the model forbids from ever becoming internal -- are
 stroked in near-black on both panels, so they must be visible on the right. Pass
@@ -186,6 +189,7 @@ function plot_reduction(c, A;
                         label_congested::Bool=true,
                         binding_lines=nothing,
                         max_congested_labels::Int=30,
+                        merge_parallel::Bool=true,
                         io::IO=stdout)
     Aint = round.(Int, A)
     retained, rep = _reduction_maps(Aint)
@@ -306,42 +310,61 @@ function plot_reduction(c, A;
                                 strokewidth=0.4, strokecolor=SURFACE)
 
     # ---- right panel: super-nodes + surviving lines, same coordinates ----
-    # Build every arc first, then draw by priority, so a later bundle's white
-    # halo can never paint over an already-drawn congested line.
+    # One arc per CLUSTER PAIR, not one per surviving line. At high reduction a
+    # pair can carry a dozen parallels and the fan turns the panel into hatching;
+    # merging keeps it readable. Nothing is lost: the arc takes the worst class
+    # among its members (congested beats protected beats plain), thickens with
+    # the count, and still carries its own xN label. Set merge_parallel=false to
+    # get one arc per line back.
     plain_arcs = Vector{Vector{Point2f}}()
+    plain_w = Float64[]
     protected_arcs = Vector{Vector{Point2f}}()
+    protected_w = Float64[]
     congested_arcs = Vector{Vector{Point2f}}()
     bundle_labels = Point2f[]
     bundle_text = String[]
     for (a, b) in sort(collect(keys(pair_lines)))
         ls = sort(pair_lines[(a, b)])
-        curvatures = _fan(length(ls))
-        for (t, l) in enumerate(ls)
-            arc = _arc(pos[a], pos[b], curvatures[t])
-            if l in congested_set
+        n = length(ls)
+        if merge_parallel
+            arc = _arc(pos[a], pos[b], 0.0)
+            # Thicken with the count, but sub-linearly and capped -- a x12 bundle
+            # should read as heavier than a x2, not twelve times heavier.
+            # No xN label: one arc per pair already says "these are one
+            # corridor", and a count on every arc is the clutter the merge
+            # was for. Thickness carries the count instead.
+            w = min(1.0 + 0.45 * sqrt(n), 3.2)
+            if any(l -> l in congested_set, ls)
                 push!(congested_arcs, arc)
-            elseif l in binding_set
-                push!(protected_arcs, arc)
+            elseif any(l -> l in binding_set, ls)
+                push!(protected_arcs, arc); push!(protected_w, max(w, 2.4))
             else
-                push!(plain_arcs, arc)
+                push!(plain_arcs, arc); push!(plain_w, w)
+            end
+        else
+            curvatures = _fan(n)
+            for (t, l) in enumerate(ls)
+                arc = _arc(pos[a], pos[b], curvatures[t])
+                if l in congested_set
+                    push!(congested_arcs, arc)
+                elseif l in binding_set
+                    push!(protected_arcs, arc); push!(protected_w, 3.0)
+                else
+                    push!(plain_arcs, arc); push!(plain_w, 1.8)
+                end
+            end
+            if n > 1
+                outer = _arc(pos[a], pos[b], maximum(curvatures) + 0.12)
+                push!(bundle_labels, outer[cld(length(outer), 4)])
+                push!(bundle_text, "x$n")
             end
         end
-        if length(ls) > 1
-            # Anchor the count just OUTSIDE the widest arc of its own fan, or it
-            # lands in the middle of the bundle it is describing. Put it at the
-            # QUARTER point rather than the midpoint: a congested line in the
-            # same bundle already claims the midpoint for its L-number, and the
-            # two collide there.
-            outer = _arc(pos[a], pos[b], maximum(curvatures) + 0.12)
-            push!(bundle_labels, outer[cld(length(outer), 4)])
-            push!(bundle_text, "×$(length(ls))")
-        end
     end
-    for arc in plain_arcs
-        lines!(axR, arc; color=INK_SECOND, linewidth=1.8)
+    for (arc, w) in zip(plain_arcs, plain_w)
+        lines!(axR, arc; color=INK_SECOND, linewidth=w)
     end
-    for arc in protected_arcs
-        lines!(axR, arc; color=INK_PRIMARY, linewidth=3.0)
+    for (arc, w) in zip(protected_arcs, protected_w)
+        lines!(axR, arc; color=INK_PRIMARY, linewidth=w)
     end
     for arc in congested_arcs
         lines!(axR, arc; color=(:white, 0.95), linewidth=7.5)
@@ -403,7 +426,9 @@ function plot_reduction(c, A;
     if any(length(v) > 1 for v in values(pair_lines))
         push!(legend_elements,
               MarkerElement(marker=:hline, color=INK_SECOND, markersize=15))
-        push!(legend_labels, "×n — parallel lines fanned on the reduced panel")
+        push!(legend_labels, merge_parallel ?
+              "thicker arc -- more parallel lines merged into one corridor" :
+              "xn -- parallel lines fanned on the reduced panel")
     end
     Legend(fig[2, 1:2], legend_elements, legend_labels;
            orientation=:horizontal, nbanks=2, framevisible=true,

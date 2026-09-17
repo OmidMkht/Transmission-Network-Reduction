@@ -15,7 +15,7 @@
 # through, not something written new for this purpose.
 #
 # CAVEAT worth carrying into any README next to an exported file: this whole
-# codebase's own DC model (tnr_preprocessing.jl's build_tx_case) already
+# codebase's own DC model (common/preprocessing.jl's build_tx_case) already
 # ignores tap ratio and phase shift when computing flows -- Dx = 1/br_x only.
 # That is a pre-existing simplification of the whole pipeline, not something
 # this export introduces. A tap/shift-aware DC or AC solve elsewhere may
@@ -36,7 +36,7 @@ bus_mapping.csv); eliminated buses are simply absent. Every load and shunt
 that belonged to an eliminated bus is redirected onto its cluster's
 representative -- not summed by hand here, but by export_matpower itself once
 `load_bus`/`shunt_bus` point at the representative, exactly mirroring how
-`_dcopf_on_partition` (tnr_postprocessing.jl) already aggregates load onto
+`_dcopf_on_partition` (common/postprocessing.jl) already aggregates load onto
 representative buses for the validated reduced-network benchmark. Generators
 are never aggregated, only `gen_bus` is redirected -- each keeps its own
 limits and cost.

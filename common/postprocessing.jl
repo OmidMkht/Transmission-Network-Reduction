@@ -4,7 +4,7 @@
 
 # ============== 1. RECOVERING THE CLUSTERING FROM LINE STATUS =============== #
 # Recover the assignment matrix from a line status vector
-function assignment_from_line_status(c::TxReductionCase, cval; tol::Float64=0.5)
+function assignment_from_line_status(c::TxReductionCase, cval; tol::Real=0.5)
     N = c.N
     g = SimpleGraph(N)
     for l in 1:c.Ln
@@ -31,7 +31,7 @@ end
 # ================== 2. FEASIBILITY OF THE RETURNED POINT ==================== #
 """Check the solver's unrounded point against every active model row."""
 function model_feasibility_check_multiscenario(c::MultiScenarioTxReductionCase, r;
-                                               tol::Float64=1e-6)
+                                               tol::Real=1e-6)
     base = c.base
     E = incidence_matrix(base)
     cr, f, g, th = r.c_raw, r.f, r.gint, r.vartheta
@@ -88,7 +88,7 @@ function screen_reduction_scenarios(c::MultiScenarioTxReductionCase, Aval, epsL;
                                     near_limit_threshold=nothing,
                                     congestion_relaxation=0.0,
                                     congestion_relaxation_mode::Symbol=:none,
-                                    tolerance::Float64=1e-7)
+                                    tolerance::Real=1e-7)
     base = c.base
     selected = Int.(collect(scenario_indices))
     # Screen against the SAME windows the MILP was given, so a window violation
@@ -165,12 +165,12 @@ end
 """Benchmark one clustering against every supplied monthly scenario."""
 function benchmark_reduction_scenarios(c::MultiScenarioTxReductionCase,
                                        Aval, epsL, scenario_indices;
-                                       congestion_threshold::Float64=0.9999,
+                                       congestion_threshold::Real=0.9999,
                                        near_limit_threshold=congestion_threshold,
                                        protection_indices=scenario_indices,
                                        congestion_relaxation=0.0,
                                        congestion_relaxation_mode::Symbol=:none,
-                                       tolerance::Float64=1e-7)
+                                       tolerance::Real=1e-7)
     scenario_indices = Int.(collect(scenario_indices))
     screen = screen_reduction_scenarios(c, Aval, epsL;
         scenario_indices=scenario_indices,
@@ -279,6 +279,7 @@ function solve_assigned_dc_opf_scenario(c::MultiScenarioTxReductionCase,
                                         Aval, scenario_index::Int;
                                         relax_pmin::Bool=true,
                                         time_limit=nothing,
+                                        line_ratings=nothing,
                                         optimizer=Gurobi.Optimizer)
     base = c.base
     N, Ln = base.N, base.Ln
@@ -308,7 +309,10 @@ function solve_assigned_dc_opf_scenario(c::MultiScenarioTxReductionCase,
     @constraint(model, [g=1:nG], pmin[g] <= pG[g] <= base.pmax[g])
     @constraint(model, [l=1:Ln],
         flow[l] == base.Dx[l] * (theta[u[l]] - theta[v[l]]))
-    @constraint(model, [l=1:Ln], -base.frate[l] <= flow[l] <= base.frate[l])
+    # `line_ratings` lets a caller solve the reduced network with DERATED
+    # limits. Defaults to the true ratings, so every existing call is unchanged.
+    frat = isnothing(line_ratings) ? base.frate : line_ratings
+    @constraint(model, [l=1:Ln], -frat[l] <= flow[l] <= frat[l])
 
     balance = Dict{Int,ConstraintRef}()
     for i in retained
@@ -348,7 +352,7 @@ end
 """Check a reduced-network dispatch on the original network for one scenario."""
 function check_dispatch_on_original_scenario(c::MultiScenarioTxReductionCase,
                                              pG, scenario_index::Int;
-                                             relative_tolerance::Float64=1e-3)
+                                             relative_tolerance::Real=1e-3)
     base = c.base
     E = incidence_matrix(base)
     B = E * Diagonal(base.Dx) * E'
@@ -453,13 +457,14 @@ reduced dispatch back on the original network.
 function validate_reduced_dcopf_scenarios(c::MultiScenarioTxReductionCase,
                                           Aval, scenario_indices;
                                           relax_pmin::Bool=true,
+                                          line_ratings=nothing,
                                           time_limit=nothing,
-                                          relative_tolerance::Float64=1e-3,
-                                          objective_tolerance_pct::Float64=0.1,
-                                          lmp_tolerance::Float64=1e-3,
+                                          relative_tolerance::Real=1e-3,
+                                          objective_tolerance_pct::Real=0.1,
+                                          lmp_tolerance::Real=1e-3,
                                           measure_repair::Bool=false,
                                           training_indices=Int[],
-                                          binding_tolerance::Float64=1e-3,
+                                          binding_tolerance::Real=1e-3,
                                           progress_every::Int=100)
     scenarios = Int.(collect(scenario_indices))
     H = length(scenarios)
@@ -522,7 +527,7 @@ function validate_reduced_dcopf_scenarios(c::MultiScenarioTxReductionCase,
     for (h, s) in enumerate(scenarios)
         original = solve_assigned_dc_opf_scenario(c, identity_assignment, s;
             relax_pmin=relax_pmin, time_limit=nothing, optimizer=optimizer)
-        reduced = solve_assigned_dc_opf_scenario(c, A, s;
+        reduced = solve_assigned_dc_opf_scenario(c, A, s; line_ratings=line_ratings,
             relax_pmin=relax_pmin, time_limit=nothing, optimizer=optimizer)
         original_status[h] = string(original.status)
         reduced_status[h] = string(reduced.status)
@@ -682,7 +687,7 @@ end
 # --------------------------------------------------------------------------- #
 # Canonical internal flows
 # --------------------------------------------------------------------------- #
-function shorted_internal_flows(c::TxReductionCase, Aval; short_factor::Float64=1e8)
+function shorted_internal_flows(c::TxReductionCase, Aval; short_factor::Real=1e8)
     A = round.(Int, Aval)
     rep = extract_reduction(A).rep_of
     E = Matrix(incidence_matrix(c))

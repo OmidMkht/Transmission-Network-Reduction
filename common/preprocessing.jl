@@ -52,7 +52,7 @@ end
 
 # Parse a pglib .m case and build a DC base operating point (via a dcopf).
 function build_tx_case(casefile::AbstractString;
-                       big_rate::Float64=1e3, time_limit=nothing)
+                       big_rate::Real=1e3, time_limit=nothing)
     raw = PowerModels.parse_file(casefile)
     data = make_basic_network(raw)
     baseMVA = data["baseMVA"]
@@ -246,7 +246,7 @@ so the reporting and file-output code cannot tell the two apart.
 that IS the cover here: everything is included.
 """
 function all_scenarios_selection(c::MultiScenarioTxReductionCase, scenario_indices;
-                                 congestion_threshold::Float64=0.99)
+                                 congestion_threshold::Real=0.99)
     idx = Int.(collect(scenario_indices))
     isempty(idx) && error("At least one scenario is required")
     base = c.base
@@ -287,7 +287,7 @@ end
 # threshold on ORIGINAL loading, independent of the tol used to detect EXACT
 # binding -- e.g. near_limit_threshold=0.9 additionally protects every line
 # already carrying >= 90% of its rating.
-function binding_lines(c::TxReductionCase; tol::Float64=1e-6, near_limit_threshold=nothing)
+function binding_lines(c::TxReductionCase; tol::Real=1e-6, near_limit_threshold=nothing)
     Lplus  = [l for l in 1:c.Ln if abs(c.fhat[l] - c.frate[l])  <= tol * max(1.0, c.frate[l])]
     Lminus = [l for l in 1:c.Ln if abs(c.fhat[l] + c.frate[l])  <= tol * max(1.0, c.frate[l])]
     if !isnothing(near_limit_threshold)
@@ -382,7 +382,7 @@ function multiscenario_windows(c::MultiScenarioTxReductionCase, epsL;
                                near_limit_threshold=nothing,
                                scenario_indices=axes(c.p, 2),
                                protection_indices=axes(c.p, 2),
-                               binding_tolerance::Float64=1e-6,
+                               binding_tolerance::Real=1e-6,
                                congestion_relaxation=0.0,
                                congestion_relaxation_mode::Symbol=:none)
     base, Ln = c.base, c.base.Ln
@@ -546,7 +546,7 @@ function dc_consistency(c::MultiScenarioTxReductionCase;
 end
 
 """Print `dc_consistency`, in MW, with a verdict on whether c = 0 is feasible."""
-function report_dc_consistency(c::MultiScenarioTxReductionCase, chk; tol::Float64=1e-9)
+function report_dc_consistency(c::MultiScenarioTxReductionCase, chk; tol::Real=1e-9)
     mva = c.base.baseMVA
     println("\nDC power-flow consistency over ", length(chk.scenarios), " scenario(s)")
     println("   sum(p) = 0        max ", chk.max_global_imbalance * mva, " MW")
@@ -578,8 +578,8 @@ function redispatch_dc_opf_scenarios(c::MultiScenarioTxReductionCase,
                                      relax_pmin::Bool=true,
                                      time_limit=nothing,
                                      progress_every::Int=100,
-                                     balance_tolerance::Float64=1e-6,
-                                     rating_relative_tolerance::Float64=1e-3)
+                                     balance_tolerance::Real=1e-6,
+                                     rating_relative_tolerance::Real=1e-3)
     scenarios = sort!(unique!(Int.(collect(scenario_indices))))
     isempty(scenarios) && error("At least one redispatch scenario is required")
     all((1 .<= scenarios) .& (scenarios .<= length(c.scenario_ids))) ||

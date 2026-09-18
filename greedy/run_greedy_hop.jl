@@ -1,11 +1,13 @@
-# Greedy network reduction.
+# Greedy network reduction with a hop limit: no merged chain inside a cluster is
+# longer than hop_cap lines.
 #
-#   julia --project=. --startup-file=no greedy/run_greedy.jl [key=value ...]
+#   julia --project=. --startup-file=no greedy/run_greedy_hop.jl [key=value ...]
 #
-# Edit SETTINGS, or override any of them on the command line, e.g.
-#   julia --project=. --startup-file=no greedy/run_greedy.jl case=case300 hop_cap=5
-#
-# One pass. For a hop ladder (hop 5, then 10, then free) use greedy/run_greedy_hop.jl.
+# hop_cap is one number, or a ladder: one greedy pass per entry, each starting
+# from what the previous one merged, e.g.
+#   julia --project=. --startup-file=no greedy/run_greedy_hop.jl case=case300 hop_cap=5
+#   julia --project=. --startup-file=no greedy/run_greedy_hop.jl case=case300 'hop_cap=[5,10,nothing]'
+# Each step writes a row to steps.csv; the audit runs on the last step.
 
 SETTINGS = (
     # --- case and demands (see common/cases.jl) ---
@@ -21,12 +23,10 @@ SETTINGS = (
     cost_cap          = 0.1,         # % over the full-network optimum; nothing = off
     flow_tol          = 1e-9,        # allowed overload, fraction of rating
     cost_tol          = 0.0,         # relative cost slack for a deliverable dispatch
-    kkt_check         = true,        # final joint KKT check, rolls merges back if it fails
+    kkt_check         = true,        # final joint KKT check per step, rolls merges back if it fails
 
-    # --- limits (nothing = no limit) ---
-    budget            = nothing,     # max merged lines
-    hop_cap           = nothing,     # max merged chain length inside a cluster
-    size_cap          = nothing,     # max buses per cluster
+    # --- hop limit ---
+    hop_cap           = 5,           # a number, or a ladder like [5, 10, nothing]
 
     # --- search ---
     ordering          = :flow,       # :flow (ranked, re-ranked) | :loading (static)
@@ -35,11 +35,11 @@ SETTINGS = (
     radial_first      = true,
 
     # --- run ---
-    time_limit        = 600.0,       # seconds
+    time_limit        = 600.0,       # seconds per step
     threads           = 1,           # per LP; the checks are many small LPs
     opf_time_limit    = 60.0,
     output_dir        = nothing,     # nothing = outputs/greedy/<case>/<tag>
 )
 
-HOP_LADDER = false
+HOP_LADDER = true
 include(joinpath(@__DIR__, "pipeline.jl"))

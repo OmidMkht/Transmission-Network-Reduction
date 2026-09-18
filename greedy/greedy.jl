@@ -37,6 +37,7 @@ Keyword options:
   alpha           weight of the 2-norm against the max-norm in the score
   radial_first    take radial merges without an LP
   kkt_check       final joint KKT check with rollback
+  held_internal   merged lines to start from and keep (e.g. an earlier hop step)
 """
 function greedy_reduction(Audit, BL, c, scope; time_limit::Real=600.0,
                           cost_gap_pct=0.1, flow_tolerance::Real=1e-9,
@@ -45,7 +46,8 @@ function greedy_reduction(Audit, BL, c, scope; time_limit::Real=600.0,
                           ordering::Symbol=:flow, norm::Symbol=:headroom,
                           alpha::Float64=0.5, radial_first::Bool=true,
                           kkt_check::Bool=true, relax_pmin::Bool=true,
-                          threads::Int=1, verbose::Bool=true)
+                          threads::Int=1, verbose::Bool=true,
+                          held_internal=nothing)
     ordering in (:flow, :loading) || error("ordering must be :flow or :loading")
     norm in (:headroom, :rating) || error("norm must be :headroom or :rating")
     base = c.base
@@ -65,6 +67,17 @@ function greedy_reduction(Audit, BL, c, scope; time_limit::Real=600.0,
             lp_checks=0, buses=N)
     initial.covered || return fail
     reference = Dict(row.scenario => row.reduced_cost for row in initial.rows)
+
+    # Start from the held merges; rollback never goes below them.
+    start = isnothing(held_internal) ? falses(L) : BitVector(held_internal)
+    length(start) == L || error("held_internal has $(length(start)) lines, case has $L")
+    if any(start)
+        clus = BL.clustering_from_internal(base, start)
+        start = BitVector([clus.rep_of[base.Efrom[k]] == clus.rep_of[base.Eto[k]] for k in 1:L])
+        internal = copy(start)
+        verbose && @printf(" starting from %d held merged lines, %d buses\n",
+                           count(start), buses(start))
+    end
 
     check_order = sort(pool; by = s -> -sum(c.load[:, s]))
     trace = NamedTuple[]
@@ -180,7 +193,8 @@ function greedy_reduction(Audit, BL, c, scope; time_limit::Real=600.0,
     kkt_verified = false
     if kkt_check
         pmin = relax_pmin ? min.(0.0, base.pmin) : base.pmin
-        while time() < deadline && !isempty(history)
+        keep = any(start) ? 1 : 0       # held merges were checked by the earlier step
+        while time() < deadline && length(history) > keep
             candidate = last(history)
             point = BL.fixed_topology_kkt_start(base, [c.load[:, s] for s in pool], pmin,
                         candidate; time_limit=max(0.0, deadline - time()), solver_threads=threads)
@@ -196,11 +210,13 @@ function greedy_reduction(Audit, BL, c, scope; time_limit::Real=600.0,
             pop!(history)
             rollbacks += 1
         end
-        kkt_verified || (internal = falses(L))
+        kkt_verified || (internal = copy(start))
     end
 
     return (; covered=true, internal, trace, elapsed_seconds=time() - started,
-            reason = !kkt_check ? :lp_checked : kkt_verified ? :kkt_verified : :rolled_back_to_full,
+            reason = !kkt_check ? :lp_checked : kkt_verified ? :kkt_verified :
+                     !any(start) ? :rolled_back_to_full :
+                     rollbacks == 0 ? :no_new_merges : :rolled_back_to_start,
             kkt_verified, rollbacks, radial_taken, rejected,
             lp_checks=lp_checks[], buses=buses(internal))
 end

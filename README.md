@@ -31,8 +31,22 @@ julia --project=. --startup-file=no greedy/run_greedy.jl case=case300 hop_cap=5
 julia --project=. --startup-file=no proxy/run_proxy.jl case=case14 demands=scaled
 ```
 
-Values can be numbers, `true`/`false`, `nothing`, words (`case300`) or lists
-(`'hop_cap=[5,10,nothing]'`, quoted in the shell).
+Values can be numbers, `true`/`false`, `nothing` or words (`case300`).
+
+### Hop limit
+
+Each approach has a second runner that limits how long a merged chain inside a
+cluster may be. `hop_cap` is one number, or a ladder: one solve per entry, each
+keeping what the previous one merged. Quote lists in the shell.
+
+```
+julia --project=. --startup-file=no kkt/run_kkt_hop.jl case=ACTIVSg200 'hop_cap=[10,20,nothing]'
+julia --project=. --startup-file=no greedy/run_greedy_hop.jl case=case300 hop_cap=5
+julia --project=. --startup-file=no proxy/run_proxy_hop.jl case=case300 'hop_cap=[5,10,nothing]'
+```
+
+A ladder writes `steps.csv`, one row per step, and the usual outputs for the
+last step. `time_limit` is per step.
 
 ### Settings shared by all three
 
@@ -46,19 +60,20 @@ Values can be numbers, `true`/`false`, `nothing`, words (`case300`) or lists
 | `time_limit` | seconds |
 | `output_dir` | `nothing` = `outputs/<approach>/<case>/<tag>/` |
 
+The `_hop` runners drop `budget` and `size_cap` and take `hop_cap` as a number
+or a ladder.
+
 ### Approach-specific
 
 - **kkt:** `cost_cap` (% over the full-network optimum), `objective`
   (`:lines` or `:clusters`), `start_from` (an `internal.csv` from another run,
-  e.g. the greedy, kept merged). A cap given as a list runs one solve per entry,
-  each keeping the previous merges: `hop_cap=[5,10,nothing]` is hop 5, hop 10,
-  then free.
+  e.g. the greedy, kept merged).
 - **greedy:** `cost_cap`, `flow_tol` (allowed overload, fraction of rating),
   `cost_tol`, `kkt_check` (final joint check with rollback), `ordering`,
   `norm`, `alpha`, `radial_first`.
 - **proxy:** `eps` (flow window, fraction of rating), `near_limit` (lines
   loaded above this stay unmerged), `relaxation`, `lmp_separation`, `kron`,
-  `derate`, `plots`, `export_matpower`.
+  `plots`, `export_matpower`.
 
 ### Outputs
 
@@ -82,17 +97,16 @@ demands have every optimum safe.
 |---|---|
 | `common/` | Case table and demands, caps, audit, pre/postprocessing, plots, MATPOWER export |
 | `analysis/` | Line-by-line infeasibility of a proxy result, network plot |
-| `hpc/` | Running on the VACC cluster, see `hpc/VACC.md` |
 | `reduced_cases/` | Reduced networks as standalone MATPOWER files |
 | `reference/` | Papers describing the formulations |
-| `archive/` | Earlier experiments, kept for reference (not maintained) |
 
 ## Case data
 
 `case14` and `case118` are included. Other PGLib-OPF cases go in
 `case studies/` (from [pglib-opf](https://github.com/power-grid-lib/pglib-opf)).
-ACTIVSg hourly scenarios need the ACTIVSg data and
-`common/make_hourly_scenarios.jl`.
+`demands=hourly` needs the ACTIVSg hourly data and the scripts that build its
+scenario matrices, which are not in this repo; `single` and `scaled` work on any
+case above.
 
 ## License
 

@@ -13,6 +13,8 @@ module Cases
 export CASES, case_file, load_demands
 
 const CASES = Dict(
+    :case6ww     => "6busww/6busww_toy.m",
+    :case14toy   => "14bus/14bus_toy.m",
     :case14      => "pglib_opf_case14_ieee.m",
     :case118     => "pglib_opf_case118_ieee.m",
     :case300     => "pglib_opf_case300_ieee.m",
@@ -24,7 +26,8 @@ const CASES = Dict(
 )
 
 # ACTIVSg2000's hourly data use a leap year (8784 h), ACTIVSg200's do not.
-const CASE_YEAR = Dict(:ACTIVSg200 => 2017, :ACTIVSg2000 => 2016)
+const CASE_YEAR = Dict(:ACTIVSg200 => 2017, :ACTIVSg2000 => 2016,
+                       :case6ww => 2015, :case14toy => 2015)
 
 const ROOT = dirname(@__DIR__)
 
@@ -76,10 +79,18 @@ function load_demands(TR, s)
                                    "common/make_hourly_scenarios.jl")
         c = TR.build_multiscenario_tx_case(file, matrix_dir; time_limit=tl,
                                            validate_saved_ratings=false)
-        idx = TR.month_scenario_indices(c, s.month; year=CASE_YEAR[s.case],
-                                        require_complete=true)
+        # `month` takes one number or several, e.g. month=[9,10,11] for a
+        # quarter. The months are concatenated in the order given and
+        # horizon_start_day / horizon_days then slice that whole stretch, so a
+        # 3-month window needs horizon_days >= 92.
+        months = s.month isa Integer ? [Int(s.month)] : Int.(collect(s.month))
+        isempty(months) && error("month must not be empty")
+        idx = reduce(vcat, (TR.month_scenario_indices(c, m; year=CASE_YEAR[s.case],
+                                                      require_complete=true)
+                            for m in months))
         first_h = (s.horizon_start_day - 1) * 24 + 1
         last_h = min(first_h + s.horizon_days * 24 - 1, length(idx))
+        first_h <= last_h || error("horizon_start_day is past the end of the window")
         c = TR.subset_multiscenario_case(c, idx[first_h:last_h])
         if s.linear_costs
             c.base.c2 .= 0.0

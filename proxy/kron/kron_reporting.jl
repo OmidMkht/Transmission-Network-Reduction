@@ -13,6 +13,9 @@ module KronReport
 
 using Printf, DelimitedFiles, Dates, Statistics
 
+# A window may span several months (month=[9,10,11]), so name them all.
+monthlabel(m) = m isa Integer ? monthname(m) : join(monthname.(m), "-")
+
 const TxReport = Main.TxReport   # already defined by the time this file loads
 
 """
@@ -476,7 +479,7 @@ function write_kron_multiscenario_outputs(dir, c, art, kron_map,
 
     open(joinpath(dir, "README.txt"), "w") do io
         println(io, has_calendar ?
-            "Month: $(monthname(cfg.month)) $(cfg.year)" :
+            "Month: $(monthlabel(cfg.month)) $(cfg.year)" :
             "Case: single operating point (S = 1), no calendar")
         println(io, "Relaxation: $(TxReport.relaxation_pretty(art.mode, art.delta))")
         println(io, "Congestion definition: abs(flow)/rating >= $(cfg.near_limit_threshold)")

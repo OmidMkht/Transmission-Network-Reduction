@@ -46,3 +46,6 @@ Thumbs.db
 *.swp
 *~
 .$*.bkp
+
+# Python bytecode cache.
+__pycache__/

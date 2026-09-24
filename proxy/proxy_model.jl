@@ -408,49 +408,60 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     # All-external is feasible for every active scenario. Radial merges provide
     # a stronger common warm start whenever the line is unprotected everywhere.
     protected_lines = findall(protected)
-    if !isnothing(warm_c)
+    cl_warm = if !isnothing(warm_c)
         length(warm_c) == Ln || error("warm_c must have length $Ln")
-        cl_warm = Int.(Main.Caps.trim_to_caps(base, round.(Int, warm_c);
-                      budget=line_budget, hop_cap, size_cap))
-        for l in 1:Ln
-            set_start_value(cl[l], cl_warm[l])
-            set_start_value(el[l], 1 - cl_warm[l])
-        end
+        # A protected line is fixed external, so a seed collapsing one would be
+        # dropped whole. Clear those and keep the rest of the seed.
+        seed = round.(Int, warm_c)
+        seed[protected] .= 0
+        Int.(Main.Caps.trim_to_caps(base, seed; budget=line_budget, hop_cap, size_cap))
     else
-        cl_warm, rep_warm = _radial_warm_start(base, protected_lines, Int[])
+        w, _ = _radial_warm_start(base, protected_lines, Int[])
+        for l in merge_lines
+            w[l] = 1
+        end
+        Int.(Main.Caps.trim_to_caps(base, w; budget=line_budget, hop_cap, size_cap))
+    end
+    # trim_to_caps goes line by line and can drop one another row fixes to 1.
+    for l in force_lines
+        cl_warm[l] = 1
+    end
+    if merge_exact_blocks && merge_exact_mode === :fix
         for l in merge_lines
             cl_warm[l] = 1
         end
-        cl_warm = Int.(Main.Caps.trim_to_caps(base, cl_warm; budget=line_budget,
-                                             hop_cap, size_cap))
-        for l in 1:Ln
-            set_start_value(cl[l], cl_warm[l])
-            set_start_value(el[l], 1 - cl_warm[l])
+    end
+    for l in 1:Ln
+        set_start_value(cl[l], cl_warm[l])
+        set_start_value(el[l], 1 - cl_warm[l])
+    end
+    # Complete the continuous half for whichever seed we ended up with. A
+    # binary-only start leaves Gurobi thousands of rows to finish and it often
+    # drops the start instead -- which is how a supplied warm_c used to buy
+    # nothing. External lines keep f = fhat; gint is left for Gurobi to complete
+    # from nodal balance.
+    A_warm = assignment_from_line_status(base, cl_warm)
+    red_warm = extract_reduction(A_warm)
+    Ew = incidence_matrix(base)
+    Bred_w = A_warm * Ew * Diagonal(base.Dx) * Ew' * A_warm'
+    ref_w = red_warm.rep_of[base.j0]
+    free_w = setdiff(red_warm.retained, [ref_w])
+    Fw = isempty(free_w) ? nothing : factorize(Bred_w[free_w, free_w])
+    for ss in 1:S
+        s = selected[ss]
+        th = zeros(N)
+        if !isnothing(Fw)
+            th[free_w] = Fw \ (A_warm * c.p[:, s])[free_w]
         end
-        # External lines keep f = fhat; gint is left for Gurobi to complete from nodal balance.
-        A_warm = assignment_from_line_status(base, cl_warm)
-        red_warm = extract_reduction(A_warm)
-        Ew = incidence_matrix(base)
-        Bred_w = A_warm * Ew * Diagonal(base.Dx) * Ew' * A_warm'
-        ref_w = red_warm.rep_of[base.j0]
-        free_w = setdiff(red_warm.retained, [ref_w])
-        Fw = isempty(free_w) ? nothing : factorize(Bred_w[free_w, free_w])
-        for ss in 1:S
-            s = selected[ss]
-            th = zeros(N)
-            if !isnothing(Fw)
-                th[free_w] = Fw \ (A_warm * c.p[:, s])[free_w]
-            end
-            for b in 1:N
-                set_start_value(vartheta[b, ss], th[red_warm.rep_of[b]])
-            end
-            for l in 1:Ln
-                fw = base.Dx[l] * (th[red_warm.rep_of[u[l]]] - th[red_warm.rep_of[v[l]]])
-                set_start_value(f[l, ss], fw)
-                if switch_form === :sos1
-                    set_start_value(sup[l, ss], max(0.0, fw - phiup[l, ss]))
-                    set_start_value(slo[l, ss], max(0.0, philo[l, ss] - fw))
-                end
+        for b in 1:N
+            set_start_value(vartheta[b, ss], th[red_warm.rep_of[b]])
+        end
+        for l in 1:Ln
+            fw = base.Dx[l] * (th[red_warm.rep_of[u[l]]] - th[red_warm.rep_of[v[l]]])
+            set_start_value(f[l, ss], fw)
+            if switch_form === :sos1
+                set_start_value(sup[l, ss], max(0.0, fw - phiup[l, ss]))
+                set_start_value(slo[l, ss], max(0.0, philo[l, ss] - fw))
             end
         end
     end

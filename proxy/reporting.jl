@@ -21,6 +21,9 @@ module TxReport
 using Printf
 using DelimitedFiles
 using Dates
+
+# A window may span several months (month=[9,10,11]), so name them all.
+monthlabel(m) = m isa Integer ? monthname(m) : join(monthname.(m), "-")
 using Statistics
 using LinearAlgebra
 using Graphs
@@ -120,7 +123,7 @@ end
 
 function report_case(c, selection, cfg, month_indices; io::IO=stdout)
     section(io, "Case")
-    println(io, "  month                     = ", monthname(cfg.month), " ", cfg.year,
+    println(io, "  month                     = ", monthlabel(cfg.month), " ", cfg.year,
             "   (", length(month_indices), " hourly scenarios)")
     println(io, "  operating-point/load scale= ", cfg.operating_point_scale,
             "   line-limit scale = ", cfg.line_limit_scale)
@@ -604,6 +607,7 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 time_limit=cfg.solve_time_limit,
                 numeric_focus=cfg.numeric_focus,
                 cycle_cut_lens=cfg.cycle_cut_lens,
+                warm_c=get(cfg, :warm_c, nothing),
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
@@ -635,6 +639,7 @@ function sweep_multiscenario(TR, c, epsL, selected, month_indices, cfg)
                 time_limit=cfg.solve_time_limit,
                 numeric_focus=cfg.numeric_focus,
                 cycle_cut_lens=cfg.cycle_cut_lens,
+                warm_c=get(cfg, :warm_c, nothing),
                 congestion_relaxation=delta,
                 congestion_relaxation_mode=mode,
                 internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
@@ -1022,7 +1027,7 @@ function write_multiscenario_outputs(dir, c, art, selection, selected, month_ind
 
     open(joinpath(dir, "README.txt"), "w") do io
         println(io, has_calendar ?
-            "Month: $(monthname(cfg.month)) $(cfg.year)" :
+            "Month: $(monthlabel(cfg.month)) $(cfg.year)" :
             "Case: single operating point (S = 1), no calendar")
         println(io, "Relaxation: $(relaxation_pretty(art.mode, art.delta))")
         println(io, "Congestion definition: abs(flow)/rating >= $(cfg.near_limit_threshold)")

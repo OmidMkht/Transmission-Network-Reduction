@@ -45,6 +45,7 @@ include(joinpath(ROOT, "common", "caps.jl"))
     end
 end
 TR = Main.TNR
+include(joinpath(@__DIR__, "greedy_proxy.jl"))
 include(joinpath(@__DIR__, "reporting.jl"))
 include(joinpath(ROOT, "common", "matpower_export.jl"))
 KRON && include(joinpath(@__DIR__, "kron", "kron_reporting.jl"))
@@ -57,7 +58,7 @@ DR = S.derate ? Main.Derating : nothing
 
 function run_tag(s)
     parts = [string(s.demands, s.demands === :single ? "" : s.n_demands), "eps$(s.eps)"]
-    s.kron && push!(parts, "kron")
+    get(s, :kron, false) && push!(parts, "kron")   # run_proxy_hop.jl has no kron
     isnothing(budget) || push!(parts, "budget$(budget)")
     any(!isnothing, hops) && push!(parts, "hop" * label(hops))
     isnothing(size_cap) || push!(parts, "size$(size_cap)")
@@ -81,7 +82,7 @@ cfg = (
     solve_time_limit = S.time_limit,
     numeric_focus = 3,
     screening_tolerance = 1e-6,
-    cycle_cut_lens = (2, 3, 4),
+    cycle_cut_lens = get(S, :cycle_cuts, (2, 3, 4)),
     internal_bound_scale = 3.0,
     internal_rating_bound = true,
     switch_form = :hull,
@@ -124,7 +125,13 @@ if S.demands in (:single, :scaled)
 else
     c = TR.build_multiscenario_tx_case(CASEFILE, cfg.matrix_dir;
             time_limit=cfg.solve_time_limit, validate_saved_ratings=false)
-    month_idx = TR.month_scenario_indices(c, S.month; year=cfg.year, require_complete=true)
+    # `month` takes one number or several, e.g. month=[9,10,11] for a quarter;
+    # same rule as common/cases.jl, which this branch deliberately mirrors.
+    months = S.month isa Integer ? [Int(S.month)] : Int.(collect(S.month))
+    isempty(months) && error("month must not be empty")
+    month_idx = reduce(vcat, (TR.month_scenario_indices(c, m; year=cfg.year,
+                                                        require_complete=true)
+                              for m in months))
     first_hour = (S.horizon_start_day - 1) * 24 + 1
     last_hour = min(first_hour + S.horizon_days * 24 - 1, length(month_idx))
     c = TR.subset_multiscenario_case(c, month_idx[first_hour:last_hour])
@@ -142,6 +149,37 @@ end
 selected = selection.scenario_indices
 epsL = cfg.normalized_error_threshold .* c.base.frate
 
+# Greedy seed. The proxy holds injections at the reference dispatch, so the seed
+# has to come from the greedy that tests the same thing -- greedy/greedy.jl lets
+# generation re-dispatch and its answer is not feasible here. Same windows, same
+# caps, same scenario sets, so what comes back is a start the solve can use.
+function proxy_seed(force, hop)
+    get(S, :greedy_seed, false) || return nothing
+    gs = Main.GreedyProxy.greedy_proxy_reduction(TR, c, epsL;
+        scenario_indices=selected, protection_indices=scenario_indices,
+        near_limit_threshold=cfg.near_limit_threshold,
+        internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
+        internal_rating_bound=get(cfg, :internal_rating_bound, false),
+        line_budget=budget, hop_cap=hop, size_cap=size_cap,
+        force_internal=force, threads=get(S, :threads, 8),
+        time_limit=get(S, :greedy_seed_time_limit, 600.0),
+        verbose=get(S, :greedy_seed_verbose, false))
+    @printf("greedy seed (hop %s): %d merged line(s), %d of %d buses, %.1f s\n",
+            something(hop, "free"), count(gs.internal), gs.buses, c.base.N,
+            gs.elapsed_seconds)
+    return Int.(gs.internal)
+end
+warm = proxy_seed(Int[], hops[1])
+
+# Hold-forward fixes every rung's merges into the next. That is what produced
+# "91 line(s) were held internal by an earlier pass -> INFEASIBLE" on case300.
+# Warm-forward seeds the next rung with the same topology instead of forcing it,
+# so a rung can walk a merge back. The last rung is still never worse than the
+# best earlier one, because that solution goes in as its warm_c.
+HOLD_FORWARD = get(S, :hold_forward, true)
+HOLD_FORWARD || println("ladder: warm-forward (rungs are seeded, not forced)")
+forced(h) = HOLD_FORWARD ? h : Int[]
+
 # Hop ladder: every step but the last is a plain solve whose merges are held;
 # the last step goes through the full sweep and reports below.
 if nsteps > 1
@@ -156,10 +194,11 @@ if nsteps > 1
             scenario_indices=selected, protection_indices=scenario_indices,
             near_limit_threshold=cfg.near_limit_threshold, time_limit=cfg.solve_time_limit,
             numeric_focus=cfg.numeric_focus, cycle_cut_lens=cfg.cycle_cut_lens,
+            warm_c=warm,
             congestion_relaxation=delta, congestion_relaxation_mode=mode,
             internal_bound_scale=cfg.internal_bound_scale,
             internal_rating_bound=cfg.internal_rating_bound, switch_form=cfg.switch_form,
-            force_internal=held, merge_exact_blocks=cfg.merge_exact_blocks,
+            force_internal=forced(held), merge_exact_blocks=cfg.merge_exact_blocks,
             merge_exact_mode=cfg.merge_exact_mode, merge_leaf_blocks=cfg.merge_leaf_blocks,
             lmp_separation=cfg.lmp_separation, lmp_threshold=cfg.lmp_threshold,
             lmp_relax_pmin=cfg.lmp_relax_pmin, lmp_opf_time_limit=cfg.opf_time_limit,
@@ -170,10 +209,17 @@ if nsteps > 1
                       buses=r.n_retained, merged_lines=length(held)))
         @printf("step %d (hop %s): %s, %d buses\n", k, something(hops[k], "free"),
                 r.status, r.n_retained)
+        # Re-seed under the NEXT rung's cap, holding what this rung merged. The
+        # rung's own answer is a valid seed too, but greedy can beat it, and a
+        # seed missing a held line contradicts the cl == 1 row and gets dropped.
+        nxt = proxy_seed(held, hops[k+1])
+        global warm = isnothing(nxt) ? Int.(r.c) : nxt
     end
-    global cfg = merge(cfg, (force_internal=held,))
+    global cfg = merge(cfg, (force_internal=forced(held), warm_c=warm))
     @printf("\n--- step %d/%d: hop %s, %d merged lines held ---\n",
             nsteps, nsteps, something(last(hops), "free"), length(held))
+elseif !isnothing(warm)
+    global cfg = merge(cfg, (warm_c=warm,))
 end
 
 if KRON

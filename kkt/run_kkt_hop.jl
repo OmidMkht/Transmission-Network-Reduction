@@ -29,6 +29,11 @@ SETTINGS = (
     # --- start ---
     start_from        = nothing,     # internal.csv of another run (e.g. greedy), kept merged
     radial            = :warm,       # :warm | :enforce | :none, safe radial merges
+    greedy_seed       = false,       # seed the solve with greedy/greedy.jl
+    greedy_seed_time_limit = 600.0,  # seconds per seed (once per ladder rung)
+    greedy_flow_tol   = 1e-9,        # greedy's overload tolerance while seeding
+    greedy_seed_verbose = false,     # print every accepted merge
+    hold_forward      = true,        # force each rung's merges into the next
 
     # --- run ---
     time_limit        = 600.0,       # seconds per step

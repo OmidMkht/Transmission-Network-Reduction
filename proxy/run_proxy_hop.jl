@@ -31,9 +31,16 @@ SETTINGS = (
     relaxation        = [(:conservative, 0.001)],  # (mode, delta) per solve: :none | :conservative | :symmetric
     lmp_separation    = true,
     lmp_threshold     = 3.0,         # $/MWh
+    cycle_cuts        = (2, 3, 4),   # short-cycle closure lengths; () turns them off
+
+    # --- greedy warm start ---
+    greedy_seed       = false,       # seed the solve with proxy/greedy_proxy.jl
+    greedy_seed_time_limit = 600.0,  # seconds per seed (once per ladder rung)
+    greedy_seed_verbose = false,     # print every accepted merge
 
     # --- hop limit ---
     hop_cap           = 5,           # a number, or a ladder like [5, 10, nothing]
+    hold_forward      = true,        # force each rung's merges into the next
 
     # --- extras ---
     derate            = false,       # derate ratings of the reduced network afterwards

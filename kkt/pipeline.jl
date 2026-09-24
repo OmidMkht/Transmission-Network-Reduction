@@ -25,6 +25,8 @@ include(joinpath(ROOT, "common", "caps.jl"))
 include(joinpath(ROOT, "common", "audit.jl"))
 include(joinpath(ROOT, "common", "results.jl"))
 include(joinpath(@__DIR__, "kkt_model.jl"))
+include(joinpath(ROOT, "greedy", "flow_sensitivity.jl"))
+include(joinpath(ROOT, "greedy", "greedy.jl"))
 const BL = Main.BilevelReduction
 
 budget, size_cap = get(S, :budget, nothing), get(S, :size_cap, nothing)
@@ -64,8 +66,41 @@ if !isnothing(S.start_from)
     println("starting from ", S.start_from, ": ", count(held), " merged lines kept")
 end
 radial = BL.radial_internal_mask(base).internal
-warm = Main.Caps.trim_to_caps(base, radial .| held; budget=budget,
-                              hop_cap=hops[1], size_cap=size_cap) .| held
+
+# Greedy seed. Same cost cap and the same caps as the rung it seeds, so the
+# topology is admissible to topology_start_allowed instead of being silently
+# swapped for the radial mask. Greedy's own kkt_check calls
+# fixed_topology_kkt_start -- the very routine that builds the KKT start -- so a
+# seed that verifies here is one the solve can complete.
+function kkt_seed(force, hop)
+    get(S, :greedy_seed, false) || return nothing
+    g = Main.Greedy.greedy_reduction(Main.Audit, BL, design, scope;
+        time_limit=get(S, :greedy_seed_time_limit, 600.0),
+        cost_gap_pct=S.cost_cap, flow_tolerance=get(S, :greedy_flow_tol, 1e-9),
+        cost_tolerance=1e-8, line_budget=budget, hop_cap=hop, size_cap=size_cap,
+        ordering=:flow, norm=:headroom, alpha=0.5, radial_first=true,
+        kkt_check=true, threads=S.threads,
+        verbose=get(S, :greedy_seed_verbose, false),
+        held_internal=any(force) ? force : nothing)
+    @printf("greedy seed (hop %s): %d merged line(s), %d of %d buses, %s, %.1f s\n",
+            something(hop, "free"), count(g.internal), g.buses, base.N,
+            g.reason, g.elapsed_seconds)
+    return g.covered ? BitVector(g.internal) : nothing
+end
+
+seed = kkt_seed(held, hops[1])
+warm = isnothing(seed) ?
+    Main.Caps.trim_to_caps(base, radial .| held; budget=budget,
+                           hop_cap=hops[1], size_cap=size_cap) .| held :
+    seed .| held
+
+# Hold-forward fixes every rung's merges into the next. Cost feasibility is not
+# downward closed, so a BETTER rung can leave the next one worse or outright
+# infeasible -- ACTIVSg200 finished at 95 buses where a weaker rung 1 reached 88,
+# and case300 died on 91 lines held by an earlier pass. Warm-forward seeds the
+# next rung with the same topology and lets the solver walk a merge back.
+HOLD_FORWARD = get(S, :hold_forward, true)
+HOLD_FORWARD || println("ladder: warm-forward (rungs are seeded, not forced)")
 
 started = time()
 best = nothing
@@ -87,9 +122,13 @@ for k in 1:nsteps
     @printf("step %d (hop %s): %s, %s buses\n", k, something(hops[k], "free"),
             r.status, r.feasible ? r.n_retained : "no")
     if r.feasible
-        global best = r
-        global held = copy(r.internal)
-        global warm = copy(r.internal)
+        # Warm-forward lets a rung come back worse than an earlier one, so take
+        # the best over rungs rather than the last. Under hold-forward the bus
+        # count only falls, so this picks the last one anyway.
+        (isnothing(best) || r.n_retained < best.n_retained) && (global best = r)
+        HOLD_FORWARD && (global held = copy(r.internal))
+        nxt = k < nsteps ? kkt_seed(copy(r.internal), hops[k+1]) : nothing
+        global warm = isnothing(nxt) ? copy(r.internal) : nxt
     end
 end
 isnothing(best) && error("no feasible reduction found; raise time_limit")

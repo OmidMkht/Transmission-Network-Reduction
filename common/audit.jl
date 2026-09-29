@@ -6,9 +6,12 @@ export topology_oracle, check_scenario!, audit_topology
 
 # Fixed topology: reuse two sparse LPs across demands. No KKT or SOS1 blocks
 # are needed to ask whether SOME lower-level optimum is original-grid feasible.
+# reduced_ratings: ratings the reduced network uses on its external lines (e.g.
+# derated); the full-network check always uses base.frate.
 function topology_oracle(base, internal::AbstractVector{Bool};
                          relax_pmin::Bool=true, threads::Int=1,
-                         cost_tolerance::Real=1e-8, flow_tolerance::Real=1e-6)
+                         cost_tolerance::Real=1e-8, flow_tolerance::Real=1e-6,
+                         reduced_ratings=nothing)
     length(internal) == base.Ln || error("internal must have one entry per line")
     all(iszero, base.c2) || error("The oracle requires the same linear costs as the master")
     cost_tolerance >= 0 && flow_tolerance >= 0 || error("tolerances must be nonnegative")
@@ -32,6 +35,8 @@ function topology_oracle(base, internal::AbstractVector{Bool};
     tt = [findall(==(i), base.Eto) for i in 1:N]
     tg = [findall(==(i), base.gen_bus) for i in 1:N]
     pmin = relax_pmin ? min.(0.0, base.pmin) : base.pmin
+    Fr = isnothing(reduced_ratings) ? base.frate : reduced_ratings
+    length(Fr) == L || error("reduced_ratings must have one entry per line")
     env = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))
     function make_model(safety)
         m = Model(() -> Gurobi.Optimizer(env))
@@ -45,7 +50,7 @@ function topology_oracle(base, internal::AbstractVector{Bool};
         @constraint(m, th[bus[base.j0]] == 0)
         @constraint(m, [l=ext], f[l] == base.Dx[l] *
             (th[bus[base.Efrom[l]]] - th[bus[base.Eto[l]]]))
-        @constraint(m, [l=ext], -base.frate[l] <= f[l] <= base.frate[l])
+        @constraint(m, [l=ext], -Fr[l] <= f[l] <= Fr[l])
         rb = @constraint(m, [i=1:R],
             sum(f[l] for l in rf[i]; init=0.0) - sum(f[l] for l in rt[i]; init=0.0) -
             sum(g[k] for k in rg[i]; init=0.0) == 0)
@@ -172,9 +177,9 @@ end
 function audit_topology(c, internal, scope; relax_pmin=true, threads=1,
                         cost_tolerance=1e-8, flow_tolerance=1e-6,
                         deadline=Inf, all_optima=false, full_costs=nothing,
-                        cost_gap_pct=nothing)
+                        cost_gap_pct=nothing, reduced_ratings=nothing)
     oracle = topology_oracle(c.base, internal; relax_pmin, threads,
-                             cost_tolerance, flow_tolerance)
+                             cost_tolerance, flow_tolerance, reduced_ratings)
     rows = NamedTuple[]
     for s in scope
         a = check_scenario!(oracle, c.load[:, s]; deadline, all_optima,

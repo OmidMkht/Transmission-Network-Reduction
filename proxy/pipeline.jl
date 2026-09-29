@@ -30,9 +30,22 @@ nsteps > 1 && length(S.relaxation) != 1 &&
     error("a hop ladder takes one relaxation setting, got $(length(S.relaxation))")
 nsteps > 1 && S.scenario_generation &&
     error("a hop ladder does not support scenario_generation")
+# time_limit is one number for every step, or one per ladder step.
+limits = S.time_limit isa AbstractVector ? Float64.(S.time_limit) : fill(Float64(S.time_limit), nsteps)
+length(limits) == nsteps || error("time_limit has $(length(limits)) entries for $nsteps step(s)")
+THREADS = get(S, :threads, 8)
+# The seed has to be feasible for the solve it starts, so it is built under the
+# one relaxation setting that solve uses, and without LMP rows it cannot model.
+SEEDED = get(S, :greedy_seed, false)
+SEEDED && length(S.relaxation) != 1 &&
+    error("greedy_seed takes one relaxation setting, got $(length(S.relaxation))")
+SEEDED && S.lmp_separation &&
+    error("greedy_seed does not model LMP separation; set lmp_separation=false")
 
 include(joinpath(ROOT, "common", "cases.jl"))
 include(joinpath(ROOT, "common", "caps.jl"))
+include(joinpath(ROOT, "common", "audit.jl"))
+include(joinpath(ROOT, "common", "results.jl"))
 @eval module TNR
     include(joinpath(dirname(@__DIR__), "common", "preprocessing.jl"))
     include(joinpath(@__DIR__, "proxy_model.jl"))
@@ -45,6 +58,7 @@ include(joinpath(ROOT, "common", "caps.jl"))
     end
 end
 TR = Main.TNR
+include(joinpath(ROOT, "kkt", "kkt_model.jl"))   # the final audit shared with kkt/ and greedy/
 include(joinpath(@__DIR__, "greedy_proxy.jl"))
 include(joinpath(@__DIR__, "reporting.jl"))
 include(joinpath(ROOT, "common", "matpower_export.jl"))
@@ -79,7 +93,8 @@ cfg = (
     derating = (certify=true, cost_cap_pct=0.5, empirical_scenarios=:all,
                 certify_scenarios=:selected, max_empirical_iters=20, max_certify_iters=15),
     opf_time_limit = S.opf_time_limit,
-    solve_time_limit = S.time_limit,
+    solve_time_limit = last(limits),   # the last step runs through the sweep below
+    threads = THREADS,
     numeric_focus = 3,
     screening_tolerance = 1e-6,
     cycle_cut_lens = get(S, :cycle_cuts, (2, 3, 4)),
@@ -114,7 +129,9 @@ Main.Settings.save_settings(joinpath(OUTPUT_DIR, "settings.txt"), S)
 
 preamble = IOBuffer()
 heldout = nothing
-if S.demands in (:single, :scaled)
+# Same design and held-out demands as kkt/ and greedy/. Only scenario generation
+# needs the whole horizon in `c`, so only it takes the branch below.
+if S.demands in (:single, :scaled) || !S.scenario_generation
     c, heldout = Main.Cases.load_demands(TR, S)
     println("case = ", basename(CASEFILE), "   ", c.base.N, " buses, ", c.base.Ln,
             " lines, ", size(c.p, 2), " design demand(s)",
@@ -154,45 +171,57 @@ epsL = cfg.normalized_error_threshold .* c.base.frate
 # generation re-dispatch and its answer is not feasible here. Same windows, same
 # caps, same scenario sets, so what comes back is a start the solve can use.
 function proxy_seed(force, hop)
-    get(S, :greedy_seed, false) || return nothing
+    SEEDED || return nothing
+    mode, delta = only(cfg.relaxation_sweep)
     gs = Main.GreedyProxy.greedy_proxy_reduction(TR, c, epsL;
         scenario_indices=selected, protection_indices=scenario_indices,
         near_limit_threshold=cfg.near_limit_threshold,
+        congestion_relaxation=delta, congestion_relaxation_mode=mode,
         internal_bound_scale=get(cfg, :internal_bound_scale, 3.0),
         internal_rating_bound=get(cfg, :internal_rating_bound, false),
         line_budget=budget, hop_cap=hop, size_cap=size_cap,
-        force_internal=force, threads=get(S, :threads, 8),
+        force_internal=force, threads=THREADS,
         time_limit=get(S, :greedy_seed_time_limit, 600.0),
         verbose=get(S, :greedy_seed_verbose, false))
-    @printf("greedy seed (hop %s): %d merged line(s), %d of %d buses, %.1f s\n",
+    @printf("greedy seed (hop %s): %d merged line(s), %d of %d buses, %s, %.1f s\n",
             something(hop, "free"), count(gs.internal), gs.buses, c.base.N,
-            gs.elapsed_seconds)
-    return Int.(gs.internal)
+            gs.reason, gs.elapsed_seconds)
+    return (c=Int.(gs.internal), merged=count(gs.internal), buses=gs.buses)
 end
-warm = proxy_seed(Int[], hops[1])
+nothing_seed = (c=nothing, merged=-1, buses=-1)
+started = time()
+seed = something(proxy_seed(Int[], hops[1]), nothing_seed)
+warm = seed.c
 
-# Hold-forward fixes every rung's merges into the next. That is what produced
-# "91 line(s) were held internal by an earlier pass -> INFEASIBLE" on case300.
-# Warm-forward seeds the next rung with the same topology instead of forcing it,
-# so a rung can walk a merge back. The last rung is still never worse than the
-# best earlier one, because that solution goes in as its warm_c.
+# Hold-forward fixes every rung's merges into the next. The hop cap only
+# loosens, so the held set stays feasible. Warm-forward seeds the next rung with
+# it instead and lets the solver undo a merge.
 HOLD_FORWARD = get(S, :hold_forward, true)
 HOLD_FORWARD || println("ladder: warm-forward (rungs are seeded, not forced)")
 forced(h) = HOLD_FORWARD ? h : Int[]
+
+steps = NamedTuple[]
+step_row(k, r, log_file) = (step=k, hop_cap=something(hops[k], "free"), time_limit=limits[k],
+    seed_merged=seed.merged, seed_buses=seed.buses,
+    start_objective=Main.Results.start_objective(log_file),
+    status=string(r.status), buses=r.n_retained, merged_lines=count(==(1), r.c),
+    bound=r.bound, solve_seconds=round(r.solve_time; digits=1),
+    seconds=round(time() - started; digits=1))
 
 # Hop ladder: every step but the last is a plain solve whose merges are held;
 # the last step goes through the full sweep and reports below.
 if nsteps > 1
     mode, delta = only(cfg.relaxation_sweep)
     held = Int[]
-    steps = NamedTuple[]
     mkpath(OUTPUT_DIR)
     for k in 1:nsteps-1
         @printf("\n--- step %d/%d: hop %s, %d merged lines held ---\n",
                 k, nsteps, something(hops[k], "free"), length(held))
+        log_file = joinpath(OUTPUT_DIR, "gurobi_step$(k).log")
         r = TR.solve_reduction_edge_multiscenario(c, epsL;
             scenario_indices=selected, protection_indices=scenario_indices,
-            near_limit_threshold=cfg.near_limit_threshold, time_limit=cfg.solve_time_limit,
+            near_limit_threshold=cfg.near_limit_threshold, time_limit=limits[k],
+            threads=THREADS,
             numeric_focus=cfg.numeric_focus, cycle_cut_lens=cfg.cycle_cut_lens,
             warm_c=warm,
             congestion_relaxation=delta, congestion_relaxation_mode=mode,
@@ -203,17 +232,18 @@ if nsteps > 1
             lmp_separation=cfg.lmp_separation, lmp_threshold=cfg.lmp_threshold,
             lmp_relax_pmin=cfg.lmp_relax_pmin, lmp_opf_time_limit=cfg.opf_time_limit,
             line_budget=budget, hop_cap=hops[k], size_cap=size_cap,
-            log_file=joinpath(OUTPUT_DIR, "gurobi_step$(k).log"))
+            log_file=log_file)
         global held = findall(==(1), r.c)
-        push!(steps, (step=k, hop_cap=something(hops[k], "free"), status=string(r.status),
-                      buses=r.n_retained, merged_lines=length(held)))
+        push!(steps, step_row(k, r, log_file))
+        Main.Results.write_rows(joinpath(OUTPUT_DIR, "steps.csv"), steps)
         @printf("step %d (hop %s): %s, %d buses\n", k, something(hops[k], "free"),
                 r.status, r.n_retained)
         # Re-seed under the NEXT rung's cap, holding what this rung merged. The
         # rung's own answer is a valid seed too, but greedy can beat it, and a
         # seed missing a held line contradicts the cl == 1 row and gets dropped.
         nxt = proxy_seed(held, hops[k+1])
-        global warm = isnothing(nxt) ? Int.(r.c) : nxt
+        global seed = something(nxt, nothing_seed)
+        global warm = isnothing(nxt) ? Int.(r.c) : nxt.c
     end
     global cfg = merge(cfg, (force_internal=forced(held), warm_c=warm))
     @printf("\n--- step %d/%d: hop %s, %d merged lines held ---\n",
@@ -235,6 +265,32 @@ else
     rows, artifacts = TxReport.sweep_multiscenario(
         TR, c, epsL, selected, scenario_indices, cfg)
 end
+
+# The same final audit as kkt/ and greedy/, so all three land in one table. It
+# needs linear costs. Several relaxation settings each get their own folder.
+for art in artifacts
+    local r = art.r
+    push!(steps, step_row(nsteps, r, joinpath(OUTPUT_DIR, art.label, "gurobi.log")))
+    S.linear_costs || (println("shared audit skipped: it needs linear_costs = true"); continue)
+    local A = round.(Int, get(art, :A_full, art.A))
+    local rep_of = [findfirst(==(1), A[:, b]) for b in 1:c.base.N]
+    local internal = BitVector([rep_of[c.base.Efrom[l]] == rep_of[c.base.Eto[l]]
+                                for l in 1:c.base.Ln])
+    local row = last(steps)
+    Main.Results.finish(Main.Audit, Main.BilevelReduction, c, heldout, internal,
+        length(artifacts) == 1 ? OUTPUT_DIR : joinpath(OUTPUT_DIR, art.label * "_audit");
+        approach="proxy", case=string(S.case), cost_cap=nothing,
+        info=Main.Results.run_info(mode=nsteps > 1 ? "ladder" : "noladder",
+            setting="eps=$(S.eps)", hop_caps=label(hops), status=r.status,
+            merged=row.merged_lines, bound=r.bound,
+            seed_merged=row.seed_merged, seed_buses=row.seed_buses,
+            start_obj=row.start_objective,
+            solve_seconds=sum(t.solve_seconds for t in steps if t.step < nsteps; init=0.0) +
+                          row.solve_seconds,
+            seconds=time() - started),
+        extra=(relaxation=art.label, steps=nsteps))
+end
+Main.Results.write_rows(joinpath(OUTPUT_DIR, "steps.csv"), steps)
 
 # One summary row per setting: size of the reduction and how far off the reduced
 # dispatch is on the full network, for design and held-out demands.
@@ -433,7 +489,7 @@ for art in artifacts
                heldout_worst_cost_change_pct=h.worst_cost_change_pct,
                heldout_worst_lmp_error=h.worst_lmp_error)
         push!(summary_rows, row)
-        isnothing(dir) || open(joinpath(dir, "summary.csv"), "w") do io_
+        isnothing(dir) || open(joinpath(dir, "proxy_summary.csv"), "w") do io_
             println(io_, join(keys(row), ","))
             println(io_, join(values(row), ","))
         end
@@ -441,18 +497,6 @@ for art in artifacts
     text = String(take!(buf))
     push!(reports, text)
     isnothing(dir) || write(joinpath(dir, "report.txt"), text)
-end
-
-if nsteps > 1
-    let r = first(artifacts).r
-        push!(steps, (step=nsteps, hop_cap=something(last(hops), "free"),
-                      status=string(r.status), buses=r.n_retained,
-                      merged_lines=count(==(1), r.c)))
-        open(joinpath(OUTPUT_DIR, "steps.csv"), "w") do io_
-            println(io_, join(keys(first(steps)), ","))
-            foreach(t -> println(io_, join(values(t), ",")), steps)
-        end
-    end
 end
 
 # Cross-setting comparison. Pairs with relaxation_comparison.csv, so it goes to
@@ -475,9 +519,10 @@ if cfg.show.write_files
     println("Full report   -> <setting>/report.txt   (or print(reports[1]) from the REPL)")
 end
 
+# summary.csv in the run folder is the shared audit above; this is the proxy's own.
 if !isempty(summary_rows)
     mkpath(cfg.output_dir)
-    open(joinpath(cfg.output_dir, "summary.csv"), "w") do io_
+    open(joinpath(cfg.output_dir, "proxy_summary.csv"), "w") do io_
         println(io_, join(keys(first(summary_rows)), ","))
         foreach(r -> println(io_, join(values(r), ",")), summary_rows)
     end

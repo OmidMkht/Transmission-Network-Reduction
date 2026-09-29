@@ -495,6 +495,9 @@ function solve_reduction_edge_multiscenario(c::MultiScenarioTxReductionCase, eps
     return solve_reduction_model!(mdl; return_model=return_model)
 end
 
+"Best bound on merged lines, or nothing if the solve stopped before one existed."
+tryparse_bound(m) = try objective_bound(m) catch; nothing end
+
 """
     solve_reduction_model!(mdl; return_model=false)
 
@@ -610,6 +613,7 @@ function solve_reduction_model!(mdl; return_model::Bool=false)
         n_merge_bridges=isnothing(merge_info) ? 0 : length(merge_info.bridges),
         n_merge_leaf_blocks=isnothing(merge_info) ? 0 : merge_info.n_leaf_blocks,
         status=st, solve_time=solve_time(m), caps=mdl.caps,
+        bound=something(tryparse_bound(m), NaN),
         model=return_model ? mdl : nothing,
     )
 end

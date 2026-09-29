@@ -90,5 +90,8 @@ end
 
 Main.Results.finish(Main.Audit, Main.BilevelReduction, design, heldout, r.internal, out;
     approach="greedy", case=string(S.case), cost_cap=S.cost_cap,
-    extra=(status=r.reason, steps=nsteps, seconds=round(time() - started; digits=1),
-           totals...))
+    info=Main.Results.run_info(mode=nsteps > 1 ? "ladder" : "noladder",
+        setting="cap=$(S.cost_cap)", hop_caps=label(hops), status=r.reason,
+        merged=count(r.internal), solve_seconds=time() - started,
+        seconds=time() - started),
+    extra=(steps=nsteps, totals...))

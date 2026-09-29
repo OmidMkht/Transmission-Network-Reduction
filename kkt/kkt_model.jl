@@ -378,6 +378,8 @@ function solve_bilevel_reduction(c, scenario_indices;
                                  log_file=nothing,
                                  kkt_form::Symbol=:standard,
                                  complete_warm_start::Bool=true,
+                                 require_warm_start::Bool=false,
+                                 start_point=nothing,
                                  radial_mode::Symbol=:enforce,
                                  objective::Symbol=:lines,
                                  t1_screening::Bool=true,
@@ -938,11 +940,27 @@ function solve_bilevel_reduction(c, scenario_indices;
         end
         return true
     end
+    # require_warm_start: a supplied seed must become the start, or stop here
+    # rather than solve for hours from a different one.
+    require_warm_start && !isnothing(warm_internal) && !topology_start_allowed(start_internal) &&
+        error("warm start rejected: the seed breaks a hop, size, budget or path row")
     topology_start_allowed(start_internal) || (start_internal = copy(fallback_internal))
     make_start(seed) = topology_start_allowed(seed) ?
         fixed_topology_kkt_start(base, demand, pmin, seed;
                                 time_limit=start_time_limit, solver_threads=solver_threads) : nothing
     warm = complete_warm_start ? make_start(start_internal) : nothing
+    # start_point: a full solution of an earlier rung, used when the seed gives
+    # no KKT point. It is feasible here because a later rung only loosens the caps.
+    start_from_point = false
+    if isnothing(warm) && !isnothing(start_point)
+        println(" Seed topology did not yield a KKT start; starting from the previous rung's solution")
+        start_internal = BitVector(start_point.internal)
+        warm = start_point
+        start_from_point = true
+    end
+    require_warm_start && !isnothing(warm_internal) && isnothing(warm) &&
+        error("warm start rejected: no KKT point for the seed topology " *
+              "(infeasible, or start_time_limit too short)")
     if complete_warm_start && isnothing(warm) && start_internal != fallback_internal
         println(" Warm topology did not yield a KKT start; retrying required/radial topology")
         start_internal = copy(fallback_internal)
@@ -1174,6 +1192,11 @@ function solve_bilevel_reduction(c, scenario_indices;
             n_sos1            = S * (4 * Ln + 2 * K +
                                       (kkt_form === :normalized ? Ln : 0)),
             internal          = internal,
+            # The whole solution, so the next ladder rung can start from it.
+            point             = (internal=internal, g=gv, th=thv, f=fv, t=tv,
+                                 lam=lamv, sig=sigv, pi0=pi0v, mup=mupv, mum=mumv,
+                                 tau=tauv, rhop=rhopv, rhom=rhomv, tth=tthv, tf=tfv),
+            start_from_point  = start_from_point,
             n_internal_lines  = count(internal),
             n_external_lines  = count(!, internal),
             rep_of            = clus.rep_of,

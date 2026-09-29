@@ -36,13 +36,15 @@ flow tolerance -- scalar or one entry per line, exactly as the proxy takes it.
 
 Every setting that shapes feasibility mirrors `solve_reduction_edge_multiscenario`
 so the result is a valid warm start for it: same `epsL`, `near_limit_threshold`,
-scenario sets, caps and `internal_rating_bound`. A seed built at a tighter eps is
-still valid for a looser solve (windows only widen); the reverse is not.
+congestion relaxation, scenario sets, caps and `internal_rating_bound`. LMP
+separation is not modelled, so the solve it seeds must run without it. Cycle
+cuts need nothing here: every candidate is closed over its clusters.
 
 Keyword options:
   scenario_indices        scenarios the windows are written for
   protection_indices      scenarios that decide which lines are protected
   near_limit_threshold    fraction of rating above which a line is protected
+  congestion_relaxation, congestion_relaxation_mode   as in the solve
   internal_bound_scale    per-line internal-transfer bound scale
   internal_rating_bound   cap the internal transfer by the line rating too
   line_budget/hop_cap/size_cap   caps, checked incrementally
@@ -51,24 +53,22 @@ Keyword options:
   feas_tol                worst single slack, p.u., still counted as feasible
   time_limit              seconds
 
-`feas_tol` is the WORST row, not the sum. A sum grows with the model -- case118
-carries 186 x 20 window rows, and LP noise of 1e-9 apiece adds up past any
-threshold tight enough to mean something -- so the per-row figure is the one that
-keeps its meaning as the case grows. The default is 1e-5 p.u., a kilowatt at
-baseMVA = 100, which sits above Gurobi's own feasibility tolerance and far below
-anything physical.
+`feas_tol` is the WORST row, not the sum. The default 1e-6 is Gurobi's own
+feasibility tolerance, so what passes here is what the solve accepts as a start.
 """
 function greedy_proxy_reduction(TR, c, epsL;
                                scenario_indices=axes(c.p, 2),
                                protection_indices=axes(c.p, 2),
                                near_limit_threshold=nothing,
+                               congestion_relaxation=0.0,
+                               congestion_relaxation_mode::Symbol=:none,
                                internal_bound_scale::Real=3.0,
                                internal_rating_bound::Bool=true,
                                line_budget=nothing, hop_cap=nothing,
                                size_cap=nothing,
                                force_internal=Int[],
                                ordering::Symbol=:loading,
-                               feas_tol::Real=1e-5,
+                               feas_tol::Real=1e-6,
                                time_limit::Real=600.0,
                                threads::Int=1,
                                verbose::Bool=true)
@@ -81,7 +81,9 @@ function greedy_proxy_reduction(TR, c, epsL;
 
     win = TR.multiscenario_windows(c, epsL; near_limit_threshold=near_limit_threshold,
                                    scenario_indices=scenario_indices,
-                                   protection_indices=protection_indices)
+                                   protection_indices=protection_indices,
+                                   congestion_relaxation=congestion_relaxation,
+                                   congestion_relaxation_mode=congestion_relaxation_mode)
     selected = Int.(collect(scenario_indices))
     philo, phiup, protected = win.philo, win.phiup, win.protected
     S = length(selected)

@@ -50,5 +50,10 @@ Thumbs.db
 # Python bytecode cache.
 __pycache__/
 
-# Python bytecode cache.
-__pycache__/
+# Solver tuning written by hpc/submit_bench.sh (node-local paths).
+gurobi.env
+
+# Adversarial approach: compiled notes and reports, and session notes, kept locally.
+/Adversarial_*.pdf
+notes/
+analysis/plot_session_findings.py

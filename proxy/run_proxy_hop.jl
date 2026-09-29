@@ -29,7 +29,7 @@ SETTINGS = (
     eps               = 0.1,         # flow-error window, fraction of each rating
     near_limit        = 0.8,         # lines loaded at or above this stay external
     relaxation        = [(:conservative, 0.001)],  # (mode, delta) per solve: :none | :conservative | :symmetric
-    lmp_separation    = true,
+    lmp_separation    = false,       # keep buses with far-apart LMPs in separate clusters
     lmp_threshold     = 3.0,         # $/MWh
     cycle_cuts        = (2, 3, 4),   # short-cycle closure lengths; () turns them off
 
@@ -47,7 +47,8 @@ SETTINGS = (
     scenario_generation = false,     # :hourly only, add violating hours and re-solve
 
     # --- run ---
-    time_limit        = 600.0,       # seconds per step
+    time_limit        = 600.0,       # seconds per step, or one per step like [3600, 7200, 14400]
+    threads           = parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", string(Sys.CPU_THREADS))),
     opf_time_limit    = 60.0,
     plots             = true,
     open_plots        = false,

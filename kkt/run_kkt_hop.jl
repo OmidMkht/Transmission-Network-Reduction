@@ -36,7 +36,7 @@ SETTINGS = (
     hold_forward      = true,        # force each rung's merges into the next
 
     # --- run ---
-    time_limit        = 600.0,       # seconds per step
+    time_limit        = 600.0,       # seconds per step, or one per step like [3600, 7200, 14400]
     threads           = parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", string(Sys.CPU_THREADS))),
     mipgap            = 1e-4,
     opf_time_limit    = 60.0,

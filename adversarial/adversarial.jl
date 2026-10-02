@@ -378,10 +378,10 @@ function master(n::Net, lines, Fr; threads=4, gap=0.05, keep=Int[], merge=Int[],
         set_optimizer_attribute(m, "OutputFlag", 1)      # the shared env is silent
     end
     set_optimizer_attribute(m, "Threads", threads)
-    # An adversary sits where some kept line is exactly at its rating, and the cut
-    # asks for tau F more. The tolerances must stay well below that (tau F is at
-    # least 2e-7 on ACTIVSg2000), or the cut passes without effect; 1e-9, Gurobi's
-    # minimum, gave wrong bounds at 2000 buses, hence 1e-8 with NumericFocus.
+    # Cuts and witness limits sit at ratings, and the check allows tau F more. The
+    # tolerances must stay well below that (tau F is at least 2e-7 on ACTIVSg2000);
+    # 1e-9, Gurobi's minimum, gave wrong bounds at 2000 buses, hence 1e-8 with
+    # NumericFocus.
     set_optimizer_attribute(m, "FeasibilityTol", 1e-8)
     set_optimizer_attribute(m, "IntFeasTol", 1e-8)
     set_optimizer_attribute(m, "NumericFocus", 2)
@@ -444,26 +444,14 @@ function flow_copy!(M, n::Net, p; limit, tau)
 end
 
 """
-The design must reject the adversary injection. It overloads line l on the full
-network, with flow v in direction sg; `keep` = Fr_l / F_l is the reduced rating's
-share of the true one.
-  :dominance  line l carries at least keep * (v - eps F), so with the true flow
-              above (1 + eps) F its reduced flow is above Fr: rejected by l itself
-  :line       line l carries more than Fr_l
-  :any        some kept candidate line carries more than its Fr (binaries)
-With a tolerance eps only overloads above eps count, and the dominance cut gets
-eps F of room.
+The dominance cut: the design must reject the adversary injection, which
+overloads line l on the full network with flow v in direction sg. Line l must
+carry at least Fr_l / F_l * (v - eps F_l): with the true flow above (1 + eps) F its
+reduced flow is then above Fr, so l itself rejects it. With a tolerance eps only
+overloads above eps count, and the cut gets eps F of room.
 """
-function reject!(M, n::Net, f, cand; tau, cut=:dominance, l=0, sg=1, v=0.0, eps=0.0)
-    cut === :dominance && return @constraint(M.m, sg * f[l] >= M.Fr[l] / n.F[l] * (v - eps * n.F[l]))
-    cut === :line && return @constraint(M.m, sg * f[l] >= M.Fr[l] + tau * n.F[l])
-    y = @variable(M.m, [cand, [1, -1]], Bin)
-    @constraint(M.m, sum(y) >= 1)
-    for j in cand, s in (1, -1)
-        @constraint(M.m, y[j, s] <= 1 - M.z[j])
-        @constraint(M.m, y[j, s] => {s * f[j] >= M.Fr[j] + tau * n.F[j]})
-    end
-end
+reject!(M, n::Net, f; l, sg, v, eps=0.0) =
+    @constraint(M.m, sg * f[l] >= M.Fr[l] / n.F[l] * (v - eps * n.F[l]))
 
 """
 Check a fixed mask of the network without line `out`, its kept lines rated
@@ -565,15 +553,14 @@ end
 # ---- polishing: more merges, checked exactly without the MIP -------------------------
 
 "What an adversary copy's cut asks of its line's reduced flow."
-need(n::Net, Fr, x; tau, cut, eps=0.0) =
-    cut === :dominance ? Fr[x.line] * (x.loading - eps) : Fr[x.line] + tau * n.F[x.line]
+need(Fr, x; eps=0.0) = Fr[x.line] * (x.loading - eps)
 
 """
 Worst slack, as a fraction of the line's rating, of every constraint the master
 holds (adversary cuts, witness limits) for one design, computed exactly on the
 contracted network. Below zero means some copy is broken.
 """
-function copies_slack(n::Net, out, mask, copies, Fr; tau, cut, eps=0.0)
+function copies_slack(n::Net, out, mask, copies, Fr; tau, eps=0.0)
     mp = ptdf(n; internal=mask, out)
     ext = findall(mp.external)
     worst = Inf
@@ -581,7 +568,7 @@ function copies_slack(n::Net, out, mask, copies, Fr; tau, cut, eps=0.0)
         f = mp.H * x.p
         if x.kind == "adversary"
             mp.external[x.line] || return -Inf
-            worst = min(worst, (x.sign * f[x.line] - need(n, Fr, x; tau, cut, eps)) / n.F[x.line])
+            worst = min(worst, (x.sign * f[x.line] - need(Fr, x; eps)) / n.F[x.line])
         else
             worst = min(worst, minimum((Fr[ext] .+ tau .* n.F[ext] .- abs.(f[ext])) ./ n.F[ext]; init=Inf))
         end
@@ -594,7 +581,7 @@ The same slack after merging one more line, for every candidate at once. Merging
 j = (a, b) moves line l's flow by -f_j T[l, j] / T[j, j], with
 T[:, j] = H[:, a] - H[:, b] on the current contracted network; this is exact.
 """
-function merge_slack(n::Net, mp, cand, copies, Fr; tau, cut, eps=0.0)
+function merge_slack(n::Net, mp, cand, copies, Fr; tau, eps=0.0)
     T = mp.H[:, n.from[cand]] .- mp.H[:, n.to[cand]]
     d = [T[cand[i], i] for i in eachindex(cand)]
     ext = findall(mp.external)
@@ -605,7 +592,7 @@ function merge_slack(n::Net, mp, cand, copies, Fr; tau, cut, eps=0.0)
         shift = f[cand] ./ d
         if x.kind == "adversary"
             l = x.line
-            score .= min.(score, (x.sign .* (f[l] .- T[l, :] .* shift) .- need(n, Fr, x; tau, cut, eps)) ./ n.F[l])
+            score .= min.(score, (x.sign .* (f[l] .- T[l, :] .* shift) .- need(Fr, x; eps)) ./ n.F[l])
         else
             G = f[ext] .- T[ext, :] .* transpose(shift)
             score .= min.(score, vec(minimum((cap .- abs.(G)) ./ n.F[ext]; dims=1)))
@@ -620,12 +607,11 @@ Every single merge is scored exactly (`merge_slack`); those that fit are taken
 best first in one batch, halved while the batch breaks a copy (`copies_slack`),
 and the scoring repeats on the new design. Lines in `keep` stay kept. The master
 can miss such merges or, with bad numerics, claim none exist; this cannot, since
-it never uses the MIP. Only for the :dominance and :line cuts. `allowed(mask)`,
-when given, must hold for every design it takes (the ladder's hop cap).
+it never uses the MIP. `allowed(mask)`, when given, must hold for every design
+it takes (the ladder's hop cap).
 """
-function polish(n::Net, out, mask, copies, Fr, keep; tau, cut, eps=0.0, time_limit=300.0, tol=1e-12,
+function polish(n::Net, out, mask, copies, Fr, keep; tau, eps=0.0, time_limit=300.0, tol=1e-12,
                 allowed=nothing)
-    cut === :any && return mask
     started = time()
     keep = Set(keep)
     mask = copy(mask)
@@ -633,7 +619,7 @@ function polish(n::Net, out, mask, copies, Fr, keep; tau, cut, eps=0.0, time_lim
         mp = ptdf(n; internal=mask, out)
         cand = [j for j in 1:n.L if mp.external[j] && !(j in keep)]
         isempty(cand) && break
-        score = merge_slack(n, mp, cand, copies, Fr; tau, cut, eps)
+        score = merge_slack(n, mp, cand, copies, Fr; tau, eps)
         order = sortperm(score; rev=true)
         good = cand[order[1:count(>=(-tol), score)]]
         isnothing(allowed) || filter!(j -> allowed(setindex!(copy(mask), true, j)), good)
@@ -642,7 +628,7 @@ function polish(n::Net, out, mask, copies, Fr, keep; tau, cut, eps=0.0, time_lim
         while true
             trial = copy(mask)
             trial[good[1:k]] .= true
-            if copies_slack(n, out, trial, copies, Fr; tau, cut, eps) >= -tol &&
+            if copies_slack(n, out, trial, copies, Fr; tau, eps) >= -tol &&
                (isnothing(allowed) || allowed(trial))
                 mask = trial
                 break
@@ -753,7 +739,7 @@ critical lines to the unmerged design, doubling h whenever nothing is found.
 `eps` is a tolerance: dispatches the design accepts may overload the full
 network by at most eps. `limits = :critical` rates only the critical lines during
 the design (the others carry no limit, as after exact limits); `:all` rates every
-kept line.
+kept line. Adversaries are rejected by the dominance cut (`reject!`).
 
 Each round solves the master, polishes its design (`polish`, up to `polish_time`
 seconds; 0 turns it off), then checks the design: hours whose witness it
@@ -772,7 +758,7 @@ merged into the next, looser rung (hold-forward). A rung that runs out of its
 share of the time, or finds nothing, passes the last certified design on. On a
 time or round limit the last certified rung's design is returned.
 """
-function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:dominance,
+function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6,
                 derate=0.0, raise=true, witnesses_per_round=10, adversaries_per_round=3,
                 master_time=20.0, time_limit=600.0, max_rounds=200, threads=4, gap=0.05,
                 fix_radial=true, unmerge_hops=2, radius=20, start=nothing, log=nothing,
@@ -782,8 +768,6 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
     keep = sort(unique(first.(crit)))
     Fr = (1 - derate) .* n.F
     limits === :critical && (Fr[setdiff(1:n.L, keep)] .= Inf)
-    # a line with no limit cannot reject anything
-    cand = filter(l -> isfinite(Fr[l]), candidates === :all ? lines : keep)
     merge = fix_radial ? [l for l in findall(bridges(n, out)) if !(l in keep)] : Int[]
     M = master(n, lines, Fr; threads, gap, keep, merge, log_file=master_log)
     started = time()
@@ -808,7 +792,7 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
             push!(rec.copies, (kind="witness", round=rec.rounds[], line=0, sign=0, loading=NaN, hour=s, p=Pw[:, s]))
         end
         for (_, p, l, sg, v) in ck.advs[1:min(adversaries_per_round, end)]
-            reject!(M, n, flow_copy!(M, n, p; limit=false, tau), cand; tau, cut, l, sg, v, eps)
+            reject!(M, n, flow_copy!(M, n, p; limit=false, tau); l, sg, v, eps)
             push!(rec.copies, (kind="adversary", round=rec.rounds[], line=l, sign=sg, loading=v / n.F[l], hour=0, p=p))
             rec.adversaries[] += 1
         end
@@ -948,7 +932,7 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
         # merges the master missed, checked exactly against every copy it holds
         t0 = time()
         before = maximum(clusters(n, mask))
-        polish_time > 0 && (mask = polish(n, out, mask, rec.copies, Fr, keep; tau, cut, eps,
+        polish_time > 0 && (mask = polish(n, out, mask, rec.copies, Fr, keep; tau, eps,
                                           time_limit=min(polish_time, max(0.0, time_limit - (time() - started))),
                                           allowed=rung[] > 0 ? within : nothing))
         polish_s = time() - t0

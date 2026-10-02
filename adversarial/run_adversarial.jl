@@ -31,7 +31,6 @@ SETTINGS = (
     search            = :master,     # :master (master + polishing) | :greedy (merge while the exact check passes)
     band              = 0.05,        # adversaries cost at most (1+band) x the loading's SC-DCOPF optimum
     tau               = 1e-6,        # overload the checks let pass, fraction of rating
-    cut               = :dominance,  # rejection: :dominance | :line (the overloaded line) | :any (some kept line)
     tolerance         = 0.0,         # accepted dispatches may overload the full network by at most this (fraction)
     limits            = :all,        # ratings during the design: :all kept lines | :critical lines only
     hop_limit         = nothing,     # outage networks: fix lines beyond this many hops to the start (nothing = radius)
@@ -40,7 +39,6 @@ SETTINGS = (
     derate            = 0.0,         # kept lines of a reduced network are rated (1 - derate) F
     margin            = nothing,     # witness: SC-DCOPF optimum at ratings (1 - margin) F; nothing = derate
     raise             = true,        # after certification, raise ratings back as far as the check allows
-    candidates        = :all,        # lines that may reject an adversary under :any: :all | :screened
     adversaries_per_round = 3,       # worst adversaries added to the master per round
     master_threads    = 4,
     master_time       = 20.0,        # seconds per master solve
@@ -219,7 +217,7 @@ for c in (S.designs && isnothing(S.load_designs) ? [0; outs] : Int[])
     r = S.search === :greedy ?
         greedy(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau, time_limit=S.network_time, log=say,
                progress=m -> csv("greedy_$(name(c)).csv", "line,internal", [(l, Int(m[l])) for l in 1:L])) :
-        design(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau, candidates=S.candidates, cut=S.cut,
+        design(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau,
                derate=S.derate, raise=S.raise, eps=S.tolerance, limits=S.limits, hop_limit=S.hop_limit,
                adversaries_per_round=S.adversaries_per_round, threads=S.master_threads,
                master_time=S.master_time, time_limit=S.network_time, max_rounds=S.max_rounds,

@@ -69,7 +69,6 @@ data covers January–March only.
 | `search` | `:master` | `:master` (master + polishing) or `:greedy` (merge in batches while the exact check passes; no master, every step certified) |
 | `band` | 0.05 | cost cap: at most (1 + band) × the interpolated SC-DCOPF optimum |
 | `tau` | 1e-6 | overload the checks let pass, fraction of the rating |
-| `cut` | `:dominance` | rejection cut: `:dominance` (reduced flow beyond full flow), `:line` (weaker: above the rating), `:any` (any kept line; binaries) |
 | `tolerance` | 0.0 | accepted dispatches may overload the full network by at most this fraction; critical pairs and adversaries count only above it, and the dominance cut gets that much room |
 | `limits` | `:all` | ratings during the design: `:all` kept lines, or `:critical` lines only (the others unlimited, as after exact limits) |
 | `hop_limit` | `nothing` | outage networks: fix every line beyond this many hops from the outage and critical lines to the start design (doubles when nothing fits); `nothing` uses `radius` |
@@ -78,7 +77,6 @@ data covers January–March only.
 | `derate` | 0.0 | kept lines rated (1 − derate) F during the design |
 | `margin` | `nothing` | witness at ratings (1 − margin) F; `nothing` = `derate` |
 | `raise` | `true` | after certification, raise lowered ratings back as far as the check allows |
-| `candidates` | `:all` | lines that may reject under `:any`: `:all` or `:screened` |
 | `adversaries_per_round` | 3 | worst adversaries added to the master per round |
 | `master_threads` | 4 | Gurobi threads for the master |
 | `master_time` | 20 | seconds per master solve |

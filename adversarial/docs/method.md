@@ -225,27 +225,23 @@ With $z$ fixed, the copy's $f$ on kept lines equals $\varphi(p)$: merged lines
 force equal angles inside a cluster, and the transfers move power freely inside
 it.
 
-**Rejection cut** for adversary $k$ that overloads line $\ell$ in direction
-$\sigma$ with full flow $v_k$ (`cut` setting):
+**Dominance cut** for adversary $k$ that overloads line $\ell$ in direction
+$\sigma$ with full flow $v_k$: $\sigma f^k_\ell \ge (r_\ell / F_\ell)\, v_k$, i.e.
+"reduced flow beyond full flow", sign-aware; with $r = F$ it is
+$\sigma f^k_\ell \ge v_k$. No binaries.
 
-| Cut | Constraint | Notes |
-|---|---|---|
-| `:dominance` (default) | $\sigma f^k_\ell \ge (r_\ell / F_\ell)\, v_k$ | "reduced flow beyond full flow", sign-aware; with $r = F$ it is $\sigma f^k_\ell \ge v_k$. No binaries. |
-| `:line` (weaker) | $\sigma f^k_\ell \ge r_\ell + \tau F_\ell$ | the overloaded line only has to exceed its rating |
-| `:any` | binaries $y_{j,s}$: $\sum y \ge 1$, $y_{j,s} \le 1 - z_j$, $y_{j,s} \Rightarrow s f^k_j \ge r_j + \tau F_j$ | any kept candidate line may reject; exact but slow |
-
-Every cut makes the reduced network reject $p^k$: its flow on $\ell$ ends up above
-the reduced rating. The dominance cut asks for more, and so tends to reject
-nearby dispatches too, which means fewer rounds. Its price is that the
-unreduced network meets it with equality, leaving merges no room (see
-`decisions.md`, "The weaker cut").
+The reduced network then rejects $p^k$ by line $\ell$ itself. The cut asks for more
+than rejection, so it also rejects nearby dispatches, which means fewer rounds. Its
+price is that the unreduced network meets it with equality, leaving merges no room
+(`decisions.md`, "The weaker cut"). The weaker cut (`:line`) and the any-line cut
+(`:any`) were tried and removed (`results.md`, Section 10).
 
 **Master variants** (settings; all keep the exact check):
 
 | Setting | What changes |
 |---|---|
 | `tolerance` ε | The guarantee becomes "accepted dispatches overload the full network by at most ε". A pair is critical only if it can exceed $(1+\varepsilon)F$, adversaries count only above $(1+\varepsilon)F$, the dominance cut becomes $\sigma f^k_\ell \ge (r_\ell/F_\ell)(v_k - \varepsilon F_\ell)$, and exact limits use $(1+\varepsilon)F$. |
-| `limits = :critical` | During the design only the critical lines carry a rating. The others are unlimited, so witness copies limit only critical lines and the `:any` cut may reject only through them. |
+| `limits = :critical` | During the design only the critical lines carry a rating. The others are unlimited, so witness copies limit only critical lines. |
 | `hop_limit` h | For outage networks, instead of the `radius` rule: every line more than h hops from the outage line and from the critical lines is fixed to the start design; h doubles whenever the master finds nothing. |
 | `polish_time` | Seconds per round for polishing (below); 0 turns it off. |
 
@@ -253,7 +249,7 @@ unreduced network meets it with equality, leaving merges no room (see
 
 | Setting | Value | Why |
 |---|---|---|
-| FeasibilityTol, IntFeasTol | $10^{-8}$ | an adversary sits where some kept line is exactly at its rating and the cut asks $\tau F$ more (at least $2\times10^{-7}$ on ACTIVSg2000); at the default $10^{-6}$ the cut could pass without effect. $10^{-9}$, Gurobi's minimum, gave invalid bounds at 2,000 buses |
+| FeasibilityTol, IntFeasTol | $10^{-8}$ | cuts and witness limits sit at ratings and the check allows $\tau F$ more (at least $2\times10^{-7}$ on ACTIVSg2000), so the tolerances must stay well below that. $10^{-9}$, Gurobi's minimum, gave invalid bounds at 2,000 buses |
 | NumericFocus | 2 | same reason |
 | MIPFocus | 1 | good designs fast; the LP check certifies them anyway |
 | MIPGap | 5% (`master_gap`) | same reason |

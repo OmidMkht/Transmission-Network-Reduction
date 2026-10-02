@@ -23,11 +23,24 @@ What was decided for the per-contingency reduction, and why (28–29 September
 | "Useful" = reduction above 50%. | |
 | Convergence: stop when no adversary can violate. | Each round adds a constraint the current design breaks and none is removed (`method.md`, Section 8). |
 | One worst adversary per round is acceptable. The code takes the 3 worst overall per round (not per line). | Per-line adversaries would add too many copies when many lines are critical. |
-| No early stopping of the adversary checks. | Parallel LP checks were asked for instead (not implemented yet). |
+| No early stopping of the adversary checks. | Parallel LP checks were asked for instead (not implemented yet). Only the greedy's pass/fail checks stop at the first failure; that cannot change its answer. |
 | **Master v2:** maximise merged lines; critical lines fixed kept; bridges fixed merged; outage start = base design → local unmerge → neighbourhood; MIPFocus 1, 5% gap. | "Make the master more scalable", items 1–4. 3–7 times faster on ACTIVSg200's hard networks. |
 | **Design on the peak month.** | The March-week designs overloaded in July because July lies outside the March hull. Designing on all of July removed the overloads on August and March. |
 | **Master approaches kept** (1 October, from the July benchmark): dominance cut + hop-limited outage search (`hops`); polishing as an optional add-on; greedy with the exact check as the alternative to the master. | `hops` was smallest, fastest and most accurate. The weaker and any-line cuts, critical-only limits and `combo` cost more time for no smaller networks. |
 | **Cluster hop ladder for seedless outage networks:** rungs `[3, 6, free]` by default (adjustable), hold-forward. Not for the intact network (`ladder_base = false`). | Outage networks whose hop region grows to the whole network have no seed to search near. On the July benchmark, the 10 such networks shrank from 666 to 620 buses at 16% more time, with the same accuracy. On the intact network the ladder lost: 4 buses against 3, 12 times slower (`results.md`, Section 10). |
+
+## Removed from the code (2 October)
+
+The state before is commit `155ab51`.
+
+| Removed | Why |
+|---|---|
+| Weaker cut (`cut=:line`; runs `line`, `line_polish`) | Same reduction as the dominance cut at 2.9 times the design time; with polishing 7.4 times, and one network uncertified at 4 h. |
+| Any-line cut (`cut=:any`, `candidates`; runs `any_crit`, `any_all`) | 2.7–3.4 times slower, and no smaller networks. |
+
+Kept for sure: the dominance cut with the hop-limited outage search (`hops`),
+polishing (`dom_polish`), the cluster hop ladder, and any combination of them.
+Everything else stays in the code for now; to be decided later.
 
 ## Rejected
 
@@ -147,14 +160,32 @@ Costs:
 
 ## Open questions and next steps
 
-1. Weaker-cut results: does it reduce the ACTIVSg2000 intact network, and at
-   what time cost? Does it change ACTIVSg200?
-2. Screening at scale: share the intact extremes across jobs and add the
-   stored-dispatch test.
-3. Design range: all of July covered August and March on ACTIVSg200. For
+As of 2 October 2026:
+
+1. **ACTIVSg2000: the condition, not the search, blocks the reduction.**
+   - With original ratings and zero tolerance, the exact-check greedy merges only
+     10 lines beyond the bridges on the intact network (1,540 of 2,000 buses), in
+     both the SC-DCOPF and the plain DCOPF range (`results.md`, Section 9).
+   - Options for room: an overload tolerance ε (about 1%, with the greedy), or a
+     narrower cost cap. Not decided.
+2. **Screening at scale:** share the intact extremes across jobs. Each 2,000-bus
+   outage job spends about 1,000 s re-solving the same 6,412 LPs. Add the
+   stored-dispatch test too.
+3. **Check speed:**
+   - Parallel adversary LPs (one model per thread).
+   - Rank-one updates of the reduced PTDF instead of rebuilding it (1–2 s per
+     check at 2,000 buses).
+   - Already done: lazy reduced rows, and stopping at the first failure for
+     pass/fail.
+4. **Ladder at scale:** lazy hop-cap rows. ACTIVSg2000 has 437,000 paths at k = 4
+   and over 2 million at k = 6; today rungs past 200,000 paths are skipped.
+5. **Master scalability beyond hops:** region plus exterior equivalent
+   ("Proposed, not implemented").
+6. **Design range:** all of July covered August and March on ACTIVSg200. For
    ACTIVSg2000 only January–March hourly data exists; July would need new
    scenarios (`common/make_hourly_scenarios.jl`).
-4. Master scalability: hop-limited outage networks, then region plus exterior
-   equivalent. Parallel adversary checks (one LP model per thread).
-5. The few large ACTIVSg200 networks (outages 73, 193, 195, 242 at about 128 buses).
-6. Test the ε option on ACTIVSg200.
+7. **ACTIVSg200 outages 73, 193, 195 and 242** stay at 128 buses (bridges only) in
+   every run.
+8. **Still to decide** whether to keep in the code: critical-only limits, the
+   radius search, the full base, derating, the tolerance ε, greedy, the
+   main-network mode, compare-only mode and the planning test.

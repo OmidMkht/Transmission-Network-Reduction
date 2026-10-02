@@ -4,6 +4,10 @@ Every run of the per-contingency reduction so far, in order (28–29 September
 2026). The method is in `method.md`; the reasons behind each choice are in
 `decisions.md`.
 
+The weaker cut and the any-line cut (runs `line`, `line_polish`, `any_crit`,
+`any_all`, and the `ACTIVSg2000_line*` runs) have since been removed from the code;
+commit `155ab51` still has them.
+
 ## How to read the numbers
 
 | Term | Meaning |
@@ -479,6 +483,31 @@ witness, 5% cap (VACC campaign `ACTIVSg200_julbench`, one folder per run;
 
 Kept from this benchmark: dominance cut + hop-limited outage search (`hops`),
 with polishing as an optional add-on (`decisions.md`).
+
+**Adversaries per network.** The totals above are over 145 separate networks:
+2.3 per network for `dom`, 2.1 for `hops`, 5.5 for the weaker cut.
+- 103 networks need none: they are certified straight from the base design.
+- The other 42 hold all of them: at most 24 in one network with the dominance
+  cut, 59 with the weaker cut.
+
+**What the hop limit does to the master** (`hops`, the 41 outage networks that
+needed the master).
+
+| Lines | Median (range) |
+|---|---|
+| In each outage network | 244 |
+| Critical, fixed kept | 1 |
+| Bridges, fixed merged | 73 |
+| Left to decide | 169 |
+| Fixed far away at h = 2 | 141 (96–152) |
+| **Free decisions at h = 2** | **28 (17–71)** |
+
+- The hop limit adds no variables and no rows: it fixes binaries.
+- Presolve then shrinks every copy. At the first master solve, the same network
+  has about 1,700 rows × 870 columns after presolve under `dom`, against about
+  250–400 × 215–290 under `hops`.
+- Where h ended: 23 networks stayed at 2, 4 grew to 4, 5 to 8, and 9 to 16 (the
+  whole network).
 
 ### Cluster hop ladder (1–2 October)
 

@@ -12,10 +12,12 @@
 module Adversarial
 
 using LinearAlgebra, JuMP, Gurobi, Printf
+# hop-cap paths and chains, shared with greedy, KKT and proxy
+include(joinpath(dirname(@__DIR__), "common", "caps.jl"))
 
 export Net, net_from_base, with_ratings, add_line, clusters, ptdf, outages_of, lodf, post_ptdf,
        injection, sc_dcopf, adversary_set, limit!, unlimit!, reach, screen, check, design,
-       exact_limits, bridges, unmerge, worst_loading
+       exact_limits, bridges, unmerge, worst_loading, greedy
 
 const GRB = Ref{Any}(nothing)
 grb() = (isnothing(GRB[]) && (GRB[] = Gurobi.Env(Dict{String,Any}("OutputFlag" => 0))); GRB[])
@@ -309,6 +311,28 @@ function bridges(n::Net, out)
     return isbridge
 end
 
+"Hops of every line from the nearest seed line (lines sharing a bus are 1 hop apart; seeds 0)."
+function line_hops(n::Net, seeds)
+    at = [Int[] for _ in 1:n.N]
+    for l in 1:n.L
+        push!(at[n.from[l]], l)
+        push!(at[n.to[l]], l)
+    end
+    dist = fill(typemax(Int), n.L)
+    front = unique(filter(>(0), seeds))
+    dist[front] .= 0
+    while !isempty(front)
+        nxt = Int[]
+        for l in front, b in (n.from[l], n.to[l]), k in at[b]
+            dist[k] == typemax(Int) || continue
+            dist[k] = dist[l] + 1
+            push!(nxt, k)
+        end
+        front = nxt
+    end
+    return dist
+end
+
 "Unmerge the merged lines within `hops` of line `out`'s ends (hops counted on the full network)."
 function unmerge(n::Net, mask, out, hops)
     adj = [Int[] for _ in 1:n.N]
@@ -339,18 +363,28 @@ end
 # lines as possible: maximize the merged lines. A line whose ends already share a
 # cluster carries no flow either way, so counting it changes nothing physical.
 # `keep` lines are fixed kept (the critical lines, which do the rejecting) and
-# `merge` lines fixed merged (bridges). `cap` carries earlier rounds' bound while
-# no neighbourhood is set; `near` keeps designs within a radius of a centre design.
-# MIPFocus 1 and a gap: good designs fast, since the LP check certifies them anyway.
-function master(n::Net, lines, Fr; threads=4, gap=0.05, keep=Int[], merge=Int[])
+# `merge` lines fixed merged (bridges); `near` keeps designs within a radius of a
+# centre design. MIPFocus 1 and a gap: good designs fast, since the LP check
+# certifies them anyway. No bound is carried between rounds: on ACTIVSg2000 Gurobi
+# reported bounds that a design it had not found beat, so the bound is not trusted.
+function master(n::Net, lines, Fr; threads=4, gap=0.05, keep=Int[], merge=Int[], log_file=nothing)
     m = Model(() -> Gurobi.Optimizer(grb()))
-    set_silent(m)
+    if isnothing(log_file)
+        set_silent(m)
+    else
+        # Gurobi's own log of every master solve, appended round after round
+        set_optimizer_attribute(m, "LogToConsole", 0)
+        set_optimizer_attribute(m, "LogFile", log_file)
+        set_optimizer_attribute(m, "OutputFlag", 1)      # the shared env is silent
+    end
     set_optimizer_attribute(m, "Threads", threads)
     # An adversary sits where some kept line is exactly at its rating, and the cut
-    # asks for a little more. With the default 1e-6 tolerances that line would pass
-    # as rejecting it and the cut would do nothing.
-    set_optimizer_attribute(m, "FeasibilityTol", 1e-9)
-    set_optimizer_attribute(m, "IntFeasTol", 1e-9)
+    # asks for tau F more. The tolerances must stay well below that (tau F is at
+    # least 2e-7 on ACTIVSg2000), or the cut passes without effect; 1e-9, Gurobi's
+    # minimum, gave wrong bounds at 2000 buses, hence 1e-8 with NumericFocus.
+    set_optimizer_attribute(m, "FeasibilityTol", 1e-8)
+    set_optimizer_attribute(m, "IntFeasTol", 1e-8)
+    set_optimizer_attribute(m, "NumericFocus", 2)
     set_optimizer_attribute(m, "MIPFocus", 1)
     set_optimizer_attribute(m, "MIPGap", gap)
     # long runs: spill the branch-and-bound tree to disk past this many GB
@@ -359,9 +393,8 @@ function master(n::Net, lines, Fr; threads=4, gap=0.05, keep=Int[], merge=Int[])
     @variable(m, z[lines], Bin)
     foreach(l -> fix(z[l], 0.0; force=true), keep)
     foreach(l -> fix(z[l], 1.0; force=true), merge)
-    cap = @constraint(m, sum(z) <= length(lines))
     @objective(m, Max, sum(z))
-    return (; m, z, lines, cap, Fr, near=Ref{Any}(nothing))
+    return (; m, z, lines, Fr, near=Ref{Any}(nothing))
 end
 
 "Keep designs within `radius` line changes of `centre`; an infinite radius removes the limit."
@@ -376,24 +409,29 @@ Flows of the design at a fixed injection p: f on kept lines, free transfers t
 inside clusters. With `limit` the kept lines carry their reduced ratings (a
 witness); without, they carry none (an adversary the design must reject).
 
-Bounds, so Gurobi can tighten the indicators: with positive susceptances a DC
-flow has no cycle, so no line carries more than the positive injection P, and
-routing each cluster's remainder over a tree needs at most (L+1)P per transfer.
+Bounds, so Gurobi can tighten the indicators: with positive susceptances the
+contracted network's DC flow has no cycle, and routing inside each cluster over a
+tree adds none, so some solution carries at most the positive injection P on
+every line, f and t alike.
 """
 function flow_copy!(M, n::Net, p; limit, tau)
     m, z, lines = M.m, M.z, M.lines
     P = sum(max.(p, 0.0))
-    fb = all(>(0), n.b) ? P : Inf
+    acyclic = all(>(0), n.b)
+    fb, tb = acyclic ? (P, P) : (Inf, (n.L + 1) * P)
     th = @variable(m, [1:n.N])
     f = @variable(m, [lines], lower_bound=-fb, upper_bound=fb)
-    t = @variable(m, [lines], lower_bound=-(n.L + 1) * P, upper_bound=(n.L + 1) * P)
+    t = @variable(m, [lines], lower_bound=-tb, upper_bound=tb)
     @constraint(m, th[n.ref] == 0)
     for l in lines
         @constraint(m, f[l] == n.b[l] * (th[n.from[l]] - th[n.to[l]]))
         @constraint(m, !z[l] => {t[l] == 0})
-        if limit
-            @constraint(m,  f[l] <= (M.Fr[l] + tau * n.F[l]) * (1 - z[l]))
-            @constraint(m, -f[l] <= (M.Fr[l] + tau * n.F[l]) * (1 - z[l]))
+        if limit && isfinite(M.Fr[l])
+            # the rating itself, not the check's tau F of room: the master's flows carry
+            # solver error, and a design passing here only by that error was rejected by
+            # the check round after round
+            @constraint(m,  f[l] <= M.Fr[l] * (1 - z[l]))
+            @constraint(m, -f[l] <= M.Fr[l] * (1 - z[l]))
         else
             @constraint(m, z[l] => {f[l] == 0})
         end
@@ -409,13 +447,15 @@ end
 The design must reject the adversary injection. It overloads line l on the full
 network, with flow v in direction sg; `keep` = Fr_l / F_l is the reduced rating's
 share of the true one.
-  :dominance  line l carries at least keep * v, so with the true flow above F its
-              reduced flow is above keep * F = Fr: rejected by l itself
+  :dominance  line l carries at least keep * (v - eps F), so with the true flow
+              above (1 + eps) F its reduced flow is above Fr: rejected by l itself
   :line       line l carries more than Fr_l
   :any        some kept candidate line carries more than its Fr (binaries)
+With a tolerance eps only overloads above eps count, and the dominance cut gets
+eps F of room.
 """
-function reject!(M, n::Net, f, cand; tau, cut=:dominance, l=0, sg=1, v=0.0)
-    cut === :dominance && return @constraint(M.m, sg * f[l] >= M.Fr[l] / n.F[l] * v)
+function reject!(M, n::Net, f, cand; tau, cut=:dominance, l=0, sg=1, v=0.0, eps=0.0)
+    cut === :dominance && return @constraint(M.m, sg * f[l] >= M.Fr[l] / n.F[l] * (v - eps * n.F[l]))
     cut === :line && return @constraint(M.m, sg * f[l] >= M.Fr[l] + tau * n.F[l])
     y = @variable(M.m, [cand, [1, -1]], Bin)
     @constraint(M.m, sum(y) >= 1)
@@ -429,9 +469,15 @@ end
 Check a fixed mask of the network without line `out`, its kept lines rated
 `rating`: the hours whose witness (columns of Pw) it rejects, and the worst
 adversary's injection for every screened pair it fails. `worst` is the highest
-loading any adversary reaches on the full network.
+loading any adversary reaches on the full network. With a tolerance `eps` only
+loadings above 1 + eps (+ tau) count as adversaries.
+
+The reduced network's limits go in lazily: a kept line's row is added once an
+adversary breaks it, so each LP holds only the rows that bind (`lazy=false` adds
+them all first; same result). With `stop` it returns at the first failure
+(rejected witnesses, or one adversary), for a pass/fail answer.
 """
-function check(n::Net, out, Hc, A, crit, Pw, mask; tau=1e-6, rating=n.F)
+function check(n::Net, out, Hc, A, crit, Pw, mask; tau=1e-6, rating=n.F, eps=0.0, stop=false, lazy=true)
     mp = ptdf(n; internal=mask, out)
     ext = findall(mp.external)
     Fw = mp.H * Pw
@@ -444,12 +490,29 @@ function check(n::Net, out, Hc, A, crit, Pw, mask; tau=1e-6, rating=n.F)
         v, s = findmax(sg .* Fw[l, :])
         v > cap[l] && !(s in bad) && push!(bad, s)
     end
-    limit!(A, mp.H, mp.external; F=rating)
+    stop && !isempty(bad) && return (; bad, rejected, advs=[], worst=NaN, cluster=mp.cluster)
+    lim = [l for l in ext if isfinite(rating[l])]
+    Hr = mp.H[lim, :]
+    on = fill(!lazy, length(lim))
+    lazy || limit!(A, mp.H, mp.external; F=rating)
     advs, worst = [], 0.0
     for (l, s, _) in crit
         v, p = reach(A, view(Hc, l, :), s)
+        while !isnothing(p)
+            f = Hr * p
+            new = [i for i in eachindex(lim) if !on[i] && abs(f[i]) > rating[lim[i]] * (1 + 1e-9)]
+            isempty(new) && break
+            on[new] .= true
+            sel = falses(n.L)
+            sel[lim[new]] .= true
+            limit!(A, mp.H, sel; F=rating)
+            v, p = reach(A, view(Hc, l, :), s)
+        end
         worst = max(worst, v / n.F[l])
-        v > n.F[l] * (1 + tau) && push!(advs, (v / n.F[l], p, l, s, v))
+        if v > n.F[l] * (1 + tau + eps)
+            push!(advs, (v / n.F[l], p, l, s, v))
+            stop && break
+        end
     end
     unlimit!(A)
     sort!(advs; by=a -> -a[1])
@@ -461,9 +524,9 @@ Give the kept lines back as much rating as the check allows: r + a(F - r) with
 the largest a in [0, 1] that still passes. Raising ratings only enlarges what
 the reduced network accepts, so passing is monotone in a and bisection is exact.
 """
-function raise_ratings(n::Net, out, Hc, A, crit, Pw, mask, rating; tau=1e-6, steps=12)
+function raise_ratings(n::Net, out, Hc, A, crit, Pw, mask, rating; tau=1e-6, eps=0.0, steps=12)
     at(a) = rating .+ a .* (n.F .- rating)
-    ok(a) = (ck = check(n, out, Hc, A, crit, Pw, mask; tau, rating=at(a));
+    ok(a) = (ck = check(n, out, Hc, A, crit, Pw, mask; tau, eps, rating=at(a));
              isempty(ck.bad) && isempty(ck.advs))
     ok(1.0) && return at(1.0)
     lo, hi = 0.0, 1.0
@@ -479,24 +542,194 @@ Limits for a finished mask, set by the critical lines alone. Each critical line
 gets the highest rating at which it still rejects, by itself, every adversary
 dispatch that loads the true line to its rating or beyond:
 
-    r_l = min over its critical signs s of  min{ s phi_l(p) : p in A, s Hc_l p >= F_l }
+    r_l = min over its critical signs s of  min{ s phi_l(p) : p in A, s Hc_l p >= (1 + eps) F_l }
 
 less tau F_l; it may land above F_l. Every other line gets no limit (Inf):
 screening showed it cannot overload for these dispatches, and a limit would only
 reject good ones. Returns nothing when a critical line is merged, since some other
 line must then do the rejecting. The result still has to pass `check`.
 """
-function exact_limits(n::Net, out, Hc, A, crit, mask; tau=1e-6)
+function exact_limits(n::Net, out, Hc, A, crit, mask; tau=1e-6, eps=0.0)
     mp = ptdf(n; internal=mask, out)
     rating = fill(Inf, n.L)
     for (l, s, _) in crit
         mp.external[l] || return nothing
-        con = @constraint(A.m, s * flowexpr(A, view(Hc, l, :)) >= n.F[l])
+        con = @constraint(A.m, s * flowexpr(A, view(Hc, l, :)) >= (1 + eps) * n.F[l])
         v, _ = reach(A, view(mp.H, l, :), -s)
         delete(A.m, con)
         isfinite(v) && (rating[l] = min(rating[l], -v - tau * n.F[l]))
     end
     return rating
+end
+
+# ---- polishing: more merges, checked exactly without the MIP -------------------------
+
+"What an adversary copy's cut asks of its line's reduced flow."
+need(n::Net, Fr, x; tau, cut, eps=0.0) =
+    cut === :dominance ? Fr[x.line] * (x.loading - eps) : Fr[x.line] + tau * n.F[x.line]
+
+"""
+Worst slack, as a fraction of the line's rating, of every constraint the master
+holds (adversary cuts, witness limits) for one design, computed exactly on the
+contracted network. Below zero means some copy is broken.
+"""
+function copies_slack(n::Net, out, mask, copies, Fr; tau, cut, eps=0.0)
+    mp = ptdf(n; internal=mask, out)
+    ext = findall(mp.external)
+    worst = Inf
+    for x in copies
+        f = mp.H * x.p
+        if x.kind == "adversary"
+            mp.external[x.line] || return -Inf
+            worst = min(worst, (x.sign * f[x.line] - need(n, Fr, x; tau, cut, eps)) / n.F[x.line])
+        else
+            worst = min(worst, minimum((Fr[ext] .+ tau .* n.F[ext] .- abs.(f[ext])) ./ n.F[ext]; init=Inf))
+        end
+    end
+    return worst
+end
+
+"""
+The same slack after merging one more line, for every candidate at once. Merging
+j = (a, b) moves line l's flow by -f_j T[l, j] / T[j, j], with
+T[:, j] = H[:, a] - H[:, b] on the current contracted network; this is exact.
+"""
+function merge_slack(n::Net, mp, cand, copies, Fr; tau, cut, eps=0.0)
+    T = mp.H[:, n.from[cand]] .- mp.H[:, n.to[cand]]
+    d = [T[cand[i], i] for i in eachindex(cand)]
+    ext = findall(mp.external)
+    cap = Fr[ext] .+ tau .* n.F[ext]
+    score = fill(Inf, length(cand))
+    for x in copies
+        f = mp.H * x.p
+        shift = f[cand] ./ d
+        if x.kind == "adversary"
+            l = x.line
+            score .= min.(score, (x.sign .* (f[l] .- T[l, :] .* shift) .- need(n, Fr, x; tau, cut, eps)) ./ n.F[l])
+        else
+            G = f[ext] .- T[ext, :] .* transpose(shift)
+            score .= min.(score, vec(minimum((cap .- abs.(G)) ./ n.F[ext]; dims=1)))
+        end
+    end
+    return score
+end
+
+"""
+Merge more lines into `mask` while every copy the master holds stays satisfied.
+Every single merge is scored exactly (`merge_slack`); those that fit are taken
+best first in one batch, halved while the batch breaks a copy (`copies_slack`),
+and the scoring repeats on the new design. Lines in `keep` stay kept. The master
+can miss such merges or, with bad numerics, claim none exist; this cannot, since
+it never uses the MIP. Only for the :dominance and :line cuts. `allowed(mask)`,
+when given, must hold for every design it takes (the ladder's hop cap).
+"""
+function polish(n::Net, out, mask, copies, Fr, keep; tau, cut, eps=0.0, time_limit=300.0, tol=1e-12,
+                allowed=nothing)
+    cut === :any && return mask
+    started = time()
+    keep = Set(keep)
+    mask = copy(mask)
+    while time() - started < time_limit
+        mp = ptdf(n; internal=mask, out)
+        cand = [j for j in 1:n.L if mp.external[j] && !(j in keep)]
+        isempty(cand) && break
+        score = merge_slack(n, mp, cand, copies, Fr; tau, cut, eps)
+        order = sortperm(score; rev=true)
+        good = cand[order[1:count(>=(-tol), score)]]
+        isnothing(allowed) || filter!(j -> allowed(setindex!(copy(mask), true, j)), good)
+        isempty(good) && break
+        k = length(good)
+        while true
+            trial = copy(mask)
+            trial[good[1:k]] .= true
+            if copies_slack(n, out, trial, copies, Fr; tau, cut, eps) >= -tol &&
+               (isnothing(allowed) || allowed(trial))
+                mask = trial
+                break
+            end
+            (k == 1 || time() - started > time_limit) && return mask
+            k = max(1, k ÷ 2)
+        end
+    end
+    return mask
+end
+
+"""
+    greedy(n, out, Hc, A, crit, Pw; ...)
+
+Reduced network by greedy merging, without the master: a merge is kept only if
+the exact check passes, so every design on the way is certified. Starts from the
+non-critical bridges merged. The other lines go in order of how far merging one
+alone can shift a critical line's flow (at its own rating), smallest first, in
+batches that double after a pass and halve after a failure; a line that fails
+alone waits for the next sweep. Sweeps repeat until one merges nothing.
+`progress(mask)` is called after every accepted batch.
+"""
+function greedy(n::Net, out, Hc, A, crit, Pw; tau=1e-6, time_limit=3600.0, batch=8, log=nothing, progress=nothing)
+    started = time()
+    lines = [l for l in 1:n.L if l != out]
+    keep = Set(first.(crit))
+    crit = copy(crit)
+    checks, adversaries, witnesses, check_s = Ref(0), Ref(0), Ref(0), Ref(0.0)
+    function passes(mask)
+        t0 = time()
+        ck = check(n, out, Hc, A, crit, Pw, mask; tau, stop=true)
+        check_s[] += time() - t0
+        checks[] += 1
+        witnesses[] += !isempty(ck.bad)
+        if !isempty(ck.advs)
+            adversaries[] += 1
+            # the pair that failed goes first next time
+            _, _, l, s, _ = ck.advs[1]
+            pushfirst!(crit, popat!(crit, findfirst(c -> c[1] == l && c[2] == s, crit)))
+        end
+        return isempty(ck.bad) && isempty(ck.advs)
+    end
+    nb(mask) = maximum(clusters(n, mask))
+    mask = falses(n.L)
+    foreach(l -> l in keep || (mask[l] = true), findall(bridges(n, out)))
+    passes(mask) || (mask = falses(n.L))
+    isnothing(log) || log(@sprintf("  start   : %d buses (non-critical bridges merged), %d critical lines kept", nb(mask), length(keep)))
+    sweeps, done = 0, false
+    while time() - started < time_limit
+        sweeps += 1
+        mp = ptdf(n; internal=mask, out)
+        cand = [j for j in lines if mp.external[j] && !(j in keep)]
+        isempty(cand) && (done = true; break)
+        # largest shift of a kept critical line's flow, per its rating, when j alone is merged
+        T = mp.H[:, n.from[cand]] .- mp.H[:, n.to[cand]]
+        kc = [l for l in keep if mp.external[l]]
+        shift = [n.F[j] / max(T[j, i], 1e-12) * maximum(abs(T[l, i]) / n.F[l] for l in kc; init=0.0) for (i, j) in enumerate(cand)]
+        queue = cand[sortperm(shift)]
+        before, k, i = nb(mask), batch, 1
+        while i <= length(queue) && time() - started < time_limit
+            b = queue[i:min(end, i + k - 1)]
+            trial = copy(mask)
+            trial[b] .= true
+            if passes(trial)
+                mask = trial
+                i += length(b)
+                k *= 2
+                # lines whose ends now share a cluster are merged already
+                cl = clusters(n, mask)
+                queue = [queue[1:i-1]; filter(j -> cl[n.from[j]] != cl[n.to[j]], queue[i:end])]
+                isnothing(progress) || progress(mask)
+                isnothing(log) || log(@sprintf("  sweep %d: +%d lines -> %d buses (%d of %d tried, %d checks, %.0fs)",
+                                               sweeps, length(b), nb(mask), i - 1, length(queue), checks[], time() - started))
+            elseif k > 1
+                k = max(1, k ÷ 2)
+            else
+                i += 1
+            end
+        end
+        isnothing(log) || log(@sprintf("  sweep %d done: %d -> %d buses, %d checks so far (%d failed on an adversary, %d on a witness), check %.0fs",
+                                       sweeps, before, nb(mask), checks[], adversaries[], witnesses[], check_s[]))
+        nb(mask) == before && i > length(queue) && (done = true; break)
+    end
+    isnothing(log) || done || log("  stopped at the time limit; the design so far is certified")
+    return (; mask, status=:certified, rating=copy(n.F), rounds=sweeps, adversaries=adversaries[],
+            witnesses=witnesses[], master_s=0.0, check_s=check_s[], seconds=time() - started,
+            copies=NamedTuple[], finished=done)
 end
 
 """
@@ -513,52 +746,129 @@ network's, for an outage) it tries that design, then the same with the merged
 lines within `unmerge_hops` of the outage line unmerged; the first that passes
 both checks is returned. Otherwise what they failed on goes into the master,
 which then searches within `radius` line changes of the unmerged design,
-doubling the radius whenever nothing is found there.
+doubling the radius whenever nothing is found there. With `hop_limit` h it
+instead fixes every line more than h hops from the outage line and from the
+critical lines to the unmerged design, doubling h whenever nothing is found.
 
-Each round solves the master, then checks the design: hours whose witness it
+`eps` is a tolerance: dispatches the design accepts may overload the full
+network by at most eps. `limits = :critical` rates only the critical lines during
+the design (the others carry no limit, as after exact limits); `:all` rates every
+kept line.
+
+Each round solves the master, polishes its design (`polish`, up to `polish_time`
+seconds; 0 turns it off), then checks the design: hours whose witness it
 rejects become witness copies, and the worst adversary of every pair it fails
 becomes a flow copy with a rejection cut. Stops when both checks pass, i.e. when
 no adversary is left, then (with `raise`) gives ratings back as far as the check
 allows. On a time or round limit it returns the unreduced network at full
 ratings, which always passes when the witnesses are feasible at (1 - derate) F.
+
+`ladder` (e.g. `[3, 6, nothing]`) is for searches without a seed: the intact
+network, or an outage network once its neighbourhood or hop region covers the
+whole network. Each rung caps every cluster's chains of merged lines at that many
+hops (one row per path one line longer; bridges and critical lines do not count)
+and runs the loop above until certified. A certified rung's merges are fixed
+merged into the next, looser rung (hold-forward). A rung that runs out of its
+share of the time, or finds nothing, passes the last certified design on. On a
+time or round limit the last certified rung's design is returned.
 """
 function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:dominance,
                 derate=0.0, raise=true, witnesses_per_round=10, adversaries_per_round=3,
                 master_time=20.0, time_limit=600.0, max_rounds=200, threads=4, gap=0.05,
-                fix_radial=true, unmerge_hops=2, radius=20, start=nothing, log=nothing)
+                fix_radial=true, unmerge_hops=2, radius=20, start=nothing, log=nothing,
+                master_log=nothing, polish_time=300.0, eps=0.0, limits=:all, hop_limit=nothing,
+                ladder=nothing)
     lines = [l for l in 1:n.L if l != out]
-    cand = candidates === :all ? lines : sort(unique(first.(crit)))
-    Fr = (1 - derate) .* n.F
     keep = sort(unique(first.(crit)))
+    Fr = (1 - derate) .* n.F
+    limits === :critical && (Fr[setdiff(1:n.L, keep)] .= Inf)
+    # a line with no limit cannot reject anything
+    cand = filter(l -> isfinite(Fr[l]), candidates === :all ? lines : keep)
     merge = fix_radial ? [l for l in findall(bridges(n, out)) if !(l in keep)] : Int[]
-    M = master(n, lines, Fr; threads, gap, keep, merge)
+    M = master(n, lines, Fr; threads, gap, keep, merge, log_file=master_log)
     started = time()
+    # copies: every injection given to the master, so its answers can be checked later
     rec = (rounds=Ref(0), adversaries=Ref(0), witnesses=Ref(0),
-           master_s=Ref(0.0), check_s=Ref(0.0))
+           master_s=Ref(0.0), check_s=Ref(0.0), copies=NamedTuple[])
     finish(mask, status, rating=copy(n.F)) = (; mask, status, rating, rounds=rec.rounds[],
         adversaries=rec.adversaries[], witnesses=rec.witnesses[], master_s=rec.master_s[],
-        check_s=rec.check_s[], seconds=time() - started)
+        check_s=rec.check_s[], seconds=time() - started, copies=rec.copies)
     kept(ck) = count(l -> l != out && ck.cluster[n.from[l]] != ck.cluster[n.to[l]], 1:n.L)
     function accept(ck)
         closed = BitVector([l != out && ck.cluster[n.from[l]] == ck.cluster[n.to[l]] for l in 1:n.L])
         rating = copy(Fr)
         rating[closed] .= n.F[closed]
-        raise && derate > 0 && (rating = raise_ratings(n, out, Hc, A, crit, Pw, closed, rating; tau))
+        raise && derate > 0 && (rating = raise_ratings(n, out, Hc, A, crit, Pw, closed, rating; tau, eps))
         return closed, rating
     end
     function learn!(ck)
         for s in ck.bad[1:min(witnesses_per_round, end)]
             flow_copy!(M, n, Pw[:, s]; limit=true, tau)
             rec.witnesses[] += 1
+            push!(rec.copies, (kind="witness", round=rec.rounds[], line=0, sign=0, loading=NaN, hour=s, p=Pw[:, s]))
         end
         for (_, p, l, sg, v) in ck.advs[1:min(adversaries_per_round, end)]
-            reject!(M, n, flow_copy!(M, n, p; limit=false, tau), cand; tau, cut, l, sg, v)
+            reject!(M, n, flow_copy!(M, n, p; limit=false, tau), cand; tau, cut, l, sg, v, eps)
+            push!(rec.copies, (kind="adversary", round=rec.rounds[], line=l, sign=sg, loading=v / n.F[l], hour=0, p=p))
             rec.adversaries[] += 1
         end
     end
     passes(ck) = isempty(ck.bad) && isempty(ck.advs)
     isnothing(log) || log(@sprintf("  fixed   : %d critical lines kept, %d bridges merged, %d of %d lines left to decide",
                                    length(keep), length(merge), length(lines) - length(keep) - length(merge), length(lines)))
+
+    # hop-limited search: lines more than h hops from the outage and critical lines
+    # keep the centre's choice
+    far = Int[]
+    dist = isnothing(hop_limit) ? Int[] : line_hops(n, [out; keep])
+    function far!(h)
+        foreach(l -> unfix(M.z[l]), far)
+        empty!(far)
+        for l in lines
+            (l in keep || l in merge || dist[l] <= h) && continue
+            fix(M.z[l], Float64(centre[l]); force=true)
+            push!(far, l)
+        end
+        isnothing(log) || log(@sprintf("  hops    : %d lines more than %d hops away fixed to the start", length(far), h))
+    end
+
+    # cluster hop ladder: chains count only the lines the master decides
+    rungs = isnothing(ladder) ? Any[] : collect(ladder)
+    rung, rung_end, caprows, held = Ref(0), Ref(Inf), ConstraintRef[], Ref{Any}(nothing)
+    decide = falses(n.L)
+    decide[lines] .= true
+    decide[keep] .= false
+    decide[merge] .= false
+    cap() = rung[] == 0 ? nothing : rungs[rung[]]
+    within(mask) = (k = cap(); isnothing(k) || isempty(Caps.long_chain(n.from, n.to, Float64.(mask .& decide), 1:n.L, k)))
+    function climb!()
+        while rung[] < length(rungs)
+            rung[] += 1
+            foreach(c -> delete(M.m, c), caprows)
+            empty!(caprows)
+            k = cap()
+            if !isnothing(k)
+                ps = try
+                    Caps.capped_paths((N=n.N, Ln=n.L, Efrom=n.from, Eto=n.to), float(k); forbidden=.!decide)
+                catch err
+                    err isa ErrorException && occursin("max_paths", err.msg) || rethrow()
+                    isnothing(log) || log(@sprintf("  ladder  : rung %d (hop cap %d) has too many paths to list; skipped", rung[], k))
+                    continue
+                end
+                foreach(P -> push!(caprows, @constraint(M.m, sum(M.z[l] for l in P) <= length(P) - 1)), ps)
+            end
+            # an equal share of what is left; the last rung gets the rest
+            left = time_limit - (time() - started)
+            rung_end[] = time() + left / (length(rungs) - rung[] + 1)
+            isnothing(log) || log(@sprintf("  ladder  : rung %d of %d, hop cap %s, %d path rows, %d merges held",
+                rung[], length(rungs), something(k, "free"), length(caprows),
+                isnothing(held[]) ? 0 : count(l -> held[].mask[l] && decide[l], 1:n.L)))
+            return true
+        end
+        return false
+    end
+    # the last certified rung's design, else nothing
+    fallback() = isnothing(held[]) ? nothing : ((c, rt) = accept(held[].ck); finish(c, :certified, rt))
 
     centre = nothing
     if !isnothing(start)
@@ -569,7 +879,7 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
         out > 0 && unmerge_hops > 0 && push!(tries, ("unmerged", unmerge(n, s0, out, unmerge_hops)))
         for (label, mask) in tries
             t0 = time()
-            ck = check(n, out, Hc, A, crit, Pw, mask; tau, rating=Fr)
+            ck = check(n, out, Hc, A, crit, Pw, mask; tau, eps, rating=Fr)
             rec.check_s[] += time() - t0
             isnothing(log) || log(@sprintf("  %-8s: %3d buses, %3d lines, rejects %d witnesses, %d adversaries, worst loading %.4f",
                 label, maximum(ck.cluster), kept(ck), ck.rejected, length(ck.advs), ck.worst))
@@ -580,24 +890,47 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
             learn!(ck)
         end
         centre = tries[end][2]
-        near!(M, centre, radius)
+        isnothing(hop_limit) ? near!(M, centre, radius) : far!(hop_limit)
     end
 
-    r = radius
+    r = isnothing(hop_limit) ? radius : hop_limit
     while true
         rec.rounds[] += 1
         left = time_limit - (time() - started)
-        (left <= 0 || rec.rounds[] > max_rounds) && return finish(falses(n.L), :limit)
+        if left <= 0 || rec.rounds[] > max_rounds
+            fb = fallback()
+            isnothing(fb) && return finish(falses(n.L), :limit)
+            isnothing(log) || log("  ladder  : limit reached; returning the last certified rung's design")
+            return fb
+        end
+        local_search = !isnothing(M.near[]) || !isempty(far)
+        # no seed left to search around: the ladder takes over
+        !local_search && rung[] == 0 && !isempty(rungs) && climb!()
+        if rung[] > 0 && rung[] < length(rungs) && time() > rung_end[]
+            isnothing(log) || log(@sprintf("  ladder  : rung %d out of time", rung[]))
+            climb!()
+        end
         set_time_limit_sec(M.m, min(master_time, left))
         # the centre as the start while the search is local; otherwise merging only the
-        # fixed bridges, which changes no other flow and so meets every cut and witness
-        local_search = !isnothing(M.near[])
+        # fixed bridges (and on the ladder the held merges, which are fixed), which
+        # changes no other flow and so meets every cut and witness
         for l in lines
+            is_fixed(M.z[l]) && continue
             set_start_value(M.z[l], local_search ? Float64(centre[l]) : Float64(l in merge))
         end
         optimize!(M.m)
         rec.master_s[] += solve_time(M.m)
         if primal_status(M.m) != MOI.FEASIBLE_POINT
+            if rung[] > 0
+                isnothing(log) || log(@sprintf("  ladder  : nothing found on rung %d", rung[]))
+                climb!() && continue
+                return something(fallback(), finish(falses(n.L), :limit))
+            end
+            if !isempty(far)
+                r *= 2
+                far!(r)
+                continue
+            end
             isnothing(M.near[]) && return finish(falses(n.L), :limit)
             r *= 2
             near!(M, centre, r >= length(lines) ? Inf : r)
@@ -610,16 +943,31 @@ function design(n::Net, out, Hc, A, crit, Pw; tau=1e-6, candidates=:all, cut=:do
             mask[l] = value(M.z[l]) > 0.5
         end
         master_s, master_status = solve_time(M.m), termination_status(M.m)
-        isnothing(M.near[]) &&
-            set_normalized_rhs(M.cap, min(normalized_rhs(M.cap), floor(objective_bound(M.m) + 1e-6)))
+        # merged lines of the design and the solve's bound on them (both count the fixed bridges)
+        master_obj, master_bound = objective_value(M.m), objective_bound(M.m)
+        # merges the master missed, checked exactly against every copy it holds
+        t0 = time()
+        before = maximum(clusters(n, mask))
+        polish_time > 0 && (mask = polish(n, out, mask, rec.copies, Fr, keep; tau, cut, eps,
+                                          time_limit=min(polish_time, max(0.0, time_limit - (time() - started))),
+                                          allowed=rung[] > 0 ? within : nothing))
+        polish_s = time() - t0
+        rec.master_s[] += polish_s
 
         t0 = time()
-        ck = check(n, out, Hc, A, crit, Pw, mask; tau, rating=Fr)
+        ck = check(n, out, Hc, A, crit, Pw, mask; tau, eps, rating=Fr)
         rec.check_s[] += time() - t0
-        isnothing(log) || log(@sprintf("  round %3d: %3d buses, %3d lines (master %.2fs, %s), rejects %d witnesses, %d adversaries, worst loading %.4f",
-            rec.rounds[], maximum(ck.cluster), kept(ck), master_s, master_status, ck.rejected,
-            length(ck.advs), ck.worst))
+        isnothing(log) || log(@sprintf("  round %3d: %3d buses, %3d lines (master %.2fs, %s, merges %.0f, bound %.1f; polished from %d buses in %.1fs), rejects %d witnesses, %d adversaries, worst loading %.4f",
+            rec.rounds[], maximum(ck.cluster), kept(ck), master_s, master_status, master_obj, master_bound,
+            before, polish_s, ck.rejected, length(ck.advs), ck.worst))
         if passes(ck)
+            if rung[] > 0 && rung[] < length(rungs)
+                # hold-forward: this rung's merges stay merged from now on
+                held[] = (; mask, ck)
+                foreach(l -> mask[l] && !is_fixed(M.z[l]) && fix(M.z[l], 1.0; force=true), lines)
+                isnothing(log) || log(@sprintf("  ladder  : rung %d certified at %d buses", rung[], maximum(ck.cluster)))
+                climb!() && continue
+            end
             closed, rating = accept(ck)
             return finish(closed, :certified, rating)
         end

@@ -85,18 +85,31 @@ function compact_scdcopf(n::Net, rows)
     return (; m, g, demand!)
 end
 
-"Solve at every column of D: cost (NaN if infeasible), dispatch, total solver seconds."
-function solve_hours(model, D)
+"""
+Solve at every column of D: cost (NaN if infeasible), dispatch, total solver
+seconds, total wall seconds and the hours attempted (all of them unless the
+`time_limit` in seconds ran out first). A model with a `solve!` (a lazy method)
+solves through it, which returns its solver seconds.
+"""
+function solve_hours(model, D; time_limit=Inf)
     T = size(D, 2)
     cost, disp, secs = fill(NaN, T), zeros(length(model.g), T), 0.0
+    t0 = time()
     for s in 1:T
+        time() - t0 > time_limit && return cost, disp, secs, time() - t0, s - 1
         model.demand!(D[:, s])
-        optimize!(model.m)
-        secs += solve_time(model.m)
+        if hasproperty(model, :solve!)
+            secs += model.solve!()
+            # a lazy solve cut short by its deadline has no valid answer for this hour
+            hasproperty(model, :unfinished) && model.unfinished[] && return cost, disp, secs, time() - t0, s - 1
+        else
+            optimize!(model.m)
+            secs += solve_time(model.m)
+        end
         termination_status(model.m) == MOI.OPTIMAL || continue
         cost[s], disp[:, s] = objective_value(model.m), value.(model.g)
     end
-    return cost, disp, secs
+    return cost, disp, secs, time() - t0, T
 end
 
 "Variables, constraints and nonzeros as Gurobi sees them (after a solve)."

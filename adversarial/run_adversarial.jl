@@ -14,6 +14,7 @@
 #
 # On a cluster the networks can be designed in parallel (hpc/submit_adversarial.sh):
 #   network_index=k   design only network k of [base; outages] into output_dir, then stop
+#                     (or a list, e.g. [2,3,4], for several networks in one job)
 #   start_from=path   try the base network's design in that masks.csv first
 #   load_designs=dir  read every part's designs from dir/*/ and run the evaluation
 
@@ -26,9 +27,16 @@ SETTINGS = (
     test_start_day    = 1,
     test_days         = 31,
     designs           = true,        # false: compare full, lazy and compact only
+    contingencies     = true,        # false: the intact network alone (plain DCOPF, no outages)
+    search            = :master,     # :master (master + polishing) | :greedy (merge while the exact check passes)
     band              = 0.05,        # adversaries cost at most (1+band) x the loading's SC-DCOPF optimum
     tau               = 1e-6,        # overload the checks let pass, fraction of rating
     cut               = :dominance,  # rejection: :dominance | :line (the overloaded line) | :any (some kept line)
+    tolerance         = 0.0,         # accepted dispatches may overload the full network by at most this (fraction)
+    limits            = :all,        # ratings during the design: :all kept lines | :critical lines only
+    hop_limit         = nothing,     # outage networks: fix lines beyond this many hops to the start (nothing = radius)
+    cluster_hops      = [3, 6, nothing], # searches without a seed: hop cap per rung, merges held forward (nothing = off)
+    ladder_base       = false,       # also use the ladder for the intact network (it lost there on ACTIVSg200)
     derate            = 0.0,         # kept lines of a reduced network are rated (1 - derate) F
     margin            = nothing,     # witness: SC-DCOPF optimum at ratings (1 - margin) F; nothing = derate
     raise             = true,        # after certification, raise ratings back as far as the check allows
@@ -37,13 +45,14 @@ SETTINGS = (
     master_threads    = 4,
     master_time       = 20.0,        # seconds per master solve
     master_gap        = 0.05,        # relative gap at which a master solve may stop
+    polish_time       = 300.0,       # seconds per round to add merges the master missed (exact, no MIP); 0 = off
     fix_radial        = true,        # merge every non-critical bridge before the master
     unmerge_hops      = 2,           # outage start: unmerge merged lines this close to the outage line
     radius            = 20,          # the master may change at most this many lines of that start
     network_time      = 600.0,       # seconds per network
     max_rounds        = 200,
     networks          = nothing,     # nothing = all; e.g. [0, 3] designs only those
-    network_index     = nothing,     # design only network k of [base; outages] (1-based)
+    network_index     = nothing,     # design only network k of [base; outages] (1-based), or a list of them
     start_from        = nothing,     # masks.csv whose base design is tried first
     load_designs      = nothing,     # folder of per-network parts to evaluate instead of designing
     exact_limits      = false,       # also evaluate each design with exact limits on its critical lines only
@@ -92,13 +101,14 @@ _, Dtest, ids_test = hours(S.test_month, S.test_start_day, S.test_days)
 net = net_from_base(base)
 N, L = net.N, net.L
 H = ptdf(net).H
-outs = outages_of(net)
+outs = S.contingencies ? outages_of(net) : Int[]
 Q = lodf(net, H, outs)
-say(@sprintf("%s: %d buses, %d lines, %d generators; hull %d hours, test %d hours; %d of %d outages keep it connected",
-             S.case, N, L, length(net.gen_bus), size(Dhull, 2), size(Dtest, 2), length(outs), L))
-all(bridges(net, 0) .== BitVector([!(l in outs) for l in 1:L])) || error("bridge search disagrees with the outage list")
+say(@sprintf("%s: %d buses, %d lines, %d generators; hull %d hours, test %d hours; ", S.case, N, L,
+             length(net.gen_bus), size(Dhull, 2), size(Dtest, 2)) *
+    (S.contingencies ? @sprintf("%d of %d outages keep it connected", length(outs), L) : "no contingencies (plain DCOPF)"))
+S.contingencies && (all(bridges(net, 0) .== BitVector([!(l in outs) for l in 1:L])) || error("bridge search disagrees with the outage list"))
 # at most 20 outages, spread over the list: each check is a full PTDF
-let gap = maximum(maximum(abs.(ptdf(net; out=c).H .- post_ptdf(H, Q, c)))
+S.contingencies && let gap = maximum(maximum(abs.(ptdf(net; out=c).H .- post_ptdf(H, Q, c)))
                   for c in outs[unique(round.(Int, range(1, length(outs); length=min(20, length(outs)))))])
     say(@sprintf("check    LODF against the PTDF with the line removed: worst gap %.1e", gap))
     gap < 1e-8 || error("LODF check failed")
@@ -159,19 +169,20 @@ function screen_all(n, H, Q, outs, D, Z; only=[0; outs])
             s == 1 ? hi[l] + (q >= 0 ? q * hi[c] : q * lo[c]) :
                      -(lo[l] + (q >= 0 ? q * lo[c] : q * hi[c])))
         A = c == 0 ? A0 : Ac
-        nets[c] = (; Hc, A, crit=screen(A, Hc, [l for l in 1:n.L if l != c]; tau=S.tau, bound))
+        nets[c] = (; Hc, A, crit=screen(A, Hc, [l for l in 1:n.L if l != c]; tau=S.tau + S.tolerance, bound))
     end
     return nets
 end
 chosen = S.networks
 if !isnothing(S.network_index)
     all_nets = [0; outs]
-    if S.network_index > length(all_nets)
+    idx = [k for k in vcat(S.network_index) if k <= length(all_nets)]
+    if isempty(idx)
         say("network_index ", S.network_index, " is past the last of ", length(all_nets), " networks")
         close(log_io)
         exit()
     end
-    chosen = [all_nets[S.network_index]]
+    chosen = all_nets[idx]
 end
 # a run that designs only some networks screens only those (the evaluation needs all)
 only = S.designs && isnothing(S.load_designs) && !isnothing(chosen) ? chosen : [0; outs]
@@ -183,6 +194,8 @@ say(@sprintf("screening (band %g%%): %d of %d networks redundant (%.1fs)",
 
 # ---- designs ------------------------------------------------------------------------
 name(c) = c == 0 ? "base" : string(c)
+# Gurobi's log of a network's master solves (Gurobi appends, so a rerun starts clean)
+master_log(c) = (f = joinpath(OUT, "gurobi_master_$(name(c)).log"); isfile(f) && rm(f); f)
 designs = Dict{Int,Any}()
 net_rows, mask_rows = [], []
 start = nothing
@@ -203,16 +216,24 @@ for c in (S.designs && isnothing(S.load_designs) ? [0; outs] : Int[])
         continue
     end
     say("network ", name(c), ": ", length(s.crit), " critical pairs")
-    r = design(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau, candidates=S.candidates, cut=S.cut,
-               derate=S.derate, raise=S.raise,
+    r = S.search === :greedy ?
+        greedy(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau, time_limit=S.network_time, log=say,
+               progress=m -> csv("greedy_$(name(c)).csv", "line,internal", [(l, Int(m[l])) for l in 1:L])) :
+        design(net, c, s.Hc, s.A, s.crit, Pw; tau=S.tau, candidates=S.candidates, cut=S.cut,
+               derate=S.derate, raise=S.raise, eps=S.tolerance, limits=S.limits, hop_limit=S.hop_limit,
                adversaries_per_round=S.adversaries_per_round, threads=S.master_threads,
                master_time=S.master_time, time_limit=S.network_time, max_rounds=S.max_rounds,
                gap=S.master_gap, fix_radial=S.fix_radial, unmerge_hops=S.unmerge_hops,
-               radius=S.radius, log=say,
+               radius=S.radius, log=say, master_log=master_log(c), polish_time=S.polish_time,
+               ladder=(c == 0 && !S.ladder_base ? nothing : S.cluster_hops),
                # outages start from the base design: a given one, else this run's
                start=(c == 0 ? nothing : !isnothing(start) ? start :
                       haskey(designs, 0) ? designs[0].mask : nothing))
     designs[c] = r
+    # what the master saw: the critical pairs and every copy's injection
+    csv("critical_$(name(c)).csv", "line,sign,worst_loading", [(l, sg, v) for (l, sg, v) in s.crit])
+    csv("master_copies_$(name(c)).csv", "kind,round,line,sign,full_loading,hour," * join(("p_$i" for i in 1:N), ","),
+        [(x.kind, x.round, x.line, x.sign, x.loading, x.hour, x.p...) for x in r.copies])
     nb = maximum(clusters(net, r.mask))
     kept = count(l -> l != c && !r.mask[l], 1:L)
     derate = 100 * (1 - minimum(r.rating ./ net.F))
@@ -226,7 +247,7 @@ end
 S.designs && say(@sprintf("designs: %.1fs", time() - t0))
 csv("networks.csv", "network,critical_pairs,redundant,buses,kept_lines,max_derating_pct,status,rounds,adversaries,witness_hours,master_s,check_s,seconds", net_rows)
 csv("masks.csv", "network,line,internal,rating_over_F", mask_rows)
-if !isnothing(chosen)
+if !isnothing(chosen) && Set(chosen) != Set([0; outs])
     say("only some networks designed: evaluation skipped")
     close(log_io)
     exit()
@@ -275,8 +296,8 @@ function angle_worst(A, n, out, mask, rating, Hc, crit)
         if mask[l]
             push!(cons, @constraint(m, f[l] == 0))
         else
-            push!(cons, @constraint(m, t[l] == 0), @constraint(m, f[l] <= rating[l]),
-                  @constraint(m, -f[l] <= rating[l]))
+            push!(cons, @constraint(m, t[l] == 0))
+            isfinite(rating[l]) && push!(cons, @constraint(m, f[l] <= rating[l]), @constraint(m, -f[l] <= rating[l]))
         end
     end
     for i in 1:n.N
@@ -295,7 +316,7 @@ S.designs && let gap = 0.0, worst = 0.0
     for (c, r) in designs
         r.status === :certified || continue
         s = scr[c]
-        w = check(net, c, s.Hc, s.A, s.crit, Pw, r.mask; tau=S.tau, rating=r.rating).worst
+        w = check(net, c, s.Hc, s.A, s.crit, Pw, r.mask; tau=S.tau, eps=S.tolerance, rating=r.rating).worst
         gap = max(gap, abs(w - angle_worst(s.A, net, c, r.mask, r.rating, s.Hc, s.crit)))
         worst = max(worst, w)
     end
@@ -312,12 +333,12 @@ designs_x = Dict{Int,Any}()
 S.designs && S.exact_limits && let changed = 0, merged_crit = 0, failed = 0, exact_ok = 0, lim_rows = []
     for c in sort(collect(keys(designs)))
         r, s = designs[c], scr[c]
-        rt = r.status === :certified ? exact_limits(net, c, s.Hc, s.A, s.crit, r.mask; tau=S.tau) : nothing
+        rt = r.status === :certified ? exact_limits(net, c, s.Hc, s.A, s.crit, r.mask; tau=S.tau, eps=S.tolerance) : nothing
         designs_x[c] = r
         if isnothing(rt)
             merged_crit += r.status === :certified
         else
-            ck = check(net, c, s.Hc, s.A, s.crit, Pw, r.mask; tau=S.tau, rating=rt)
+            ck = check(net, c, s.Hc, s.A, s.crit, Pw, r.mask; tau=S.tau, eps=S.tolerance, rating=rt)
             if isempty(ck.bad) && isempty(ck.advs)
                 changed += 1
                 designs_x[c] = (; mask=r.mask, rating=rt, status=r.status)
@@ -337,6 +358,10 @@ S.designs && S.exact_limits && let changed = 0, merged_crit = 0, failed = 0, exa
     say(@sprintf("exact limits: %d designs changed, %d kept their own (%d with a merged critical line, %d failing the check); %d of %d accept the exact SC-DCOPF optimum at every hour",
                  changed, merged_crit + failed, merged_crit, failed, exact_ok, length(designs)))
     csv("exact_limits.csv", "network,limits,limited_lines,kept_lines,critical_limit_over_F,accepts_exact_optimum", lim_rows)
+    # the designs with their exact limits, in the masks.csv format
+    csv("masks_exact.csv", "network,line,internal,rating_over_F",
+        [(name(c), l, Int(designs_x[c].mask[l]), designs_x[c].rating[l] / net.F[l])
+         for c in sort(collect(keys(designs_x))) for l in 1:L if l != c])
 end
 
 # ---- the SC-DCOPF forms ---------------------------------------------------------------
